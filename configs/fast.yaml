@@ -1,8 +1,8 @@
 # Quick-but-real probe: 1500-patient random slice, few epochs. Enough to judge
 # whether the methodology is worth pursuing -- NOT thesis-grade numbers.
 fast_mode: true
-epochs: 5
+epochs: 20
 imgsz: 512
 batch: 8
 png_size: 640
-max_patients: 1500   # bump toward full RSNA (~26k) as you trust the path; None = all
+max_patients: 5000   # bump toward full RSNA (~26k) as you trust the path; None = all

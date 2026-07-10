@@ -47,5 +47,5 @@ def test_shipped_configs_load():
     from src.config.loader import load_config
 
     cfgs = Path(__file__).resolve().parents[1] / "configs"
-    assert load_config(cfgs / "fast.yaml").max_patients == 1500
+    assert load_config(cfgs / "fast.yaml").max_patients == 5000
     assert load_config(cfgs / "thesis.yaml").max_patients is None
