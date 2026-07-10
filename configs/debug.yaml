@@ -1,0 +1,7 @@
+# 5-image synthetic set. Runs under 2 min, no GPU required.
+fast_mode: true
+debug_mode: true
+epochs: 1
+batch: 2
+num_workers: 0
+cache_png: false

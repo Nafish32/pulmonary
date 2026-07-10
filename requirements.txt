@@ -1,0 +1,24 @@
+# Core (skeleton + config validation)
+pydantic>=2
+pyyaml
+numpy
+pandas
+matplotlib
+
+# Imaging / data
+opencv-python-headless
+pydicom<3
+pylibjpeg
+pylibjpeg-libjpeg
+pylibjpeg-openjpeg
+scikit-image
+
+# Detector + XAI
+# NOT VERIFIED: exact ultralytics version that ships yolo26m.pt weights.
+# Pin the version you smoke-tested before a thesis run; check `pip show ultralytics`
+# and the changelog. Fallback chain (yolo26m->yolo11m->yolov8m) covers older pins.
+ultralytics
+grad-cam
+
+# torch is preinstalled on Kaggle GPU images; pin locally if you run off-Kaggle.
+torch

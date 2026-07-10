@@ -1,0 +1,6 @@
+# Smoke config: validates the whole chain fast, not thesis-grade numbers.
+fast_mode: true
+epochs: 5
+imgsz: 512
+batch: 8
+png_size: 640

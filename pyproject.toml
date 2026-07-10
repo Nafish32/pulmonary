@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thesis-cxr"
+version = "0.1.0"
+description = "Trustworthy pulmonary opacity localization pipeline (RSNA -> VinDr)"
+requires-python = ">=3.10"
+dependencies = ["pydantic>=2", "pyyaml", "numpy", "pandas", "matplotlib"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

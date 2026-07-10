@@ -1,0 +1,11 @@
+# Full thesis-numbers run. fast_mode MUST be false here.
+fast_mode: false
+epochs: 40
+imgsz: 640
+fallback_imgsz: 512
+batch: 12
+png_size: 640
+detector_model_name: yolo26m.pt
+calibration_enabled: true
+uncertainty_enabled: true
+robustness_enabled: true
