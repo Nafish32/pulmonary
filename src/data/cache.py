@@ -53,7 +53,11 @@ def build_png_cache(df, images_dir, out_dir, cfg, id_col: str = "patientId"):
 
     def _one(pid):
         dst = out_dir / f"{pid}.png"
-        arr = read_dicom(images_dir / f"{pid}.dcm")  # decode gives orig dims
+        try:
+            arr = read_dicom(images_dir / f"{pid}.dcm")  # decode gives orig dims
+        except RuntimeError as e:
+            logger.warning("skipping corrupt/unreadable DICOM %s: %s", pid, e)
+            return pid, None, None, None
         h, w = arr.shape
         if not (cfg.cache_png and dst.exists()):
             cv2.imwrite(str(dst), cv2.resize(arr, (cfg.png_size, cfg.png_size)))
@@ -66,12 +70,17 @@ def build_png_cache(df, images_dir, out_dir, cfg, id_col: str = "patientId"):
         with ThreadPoolExecutor(max_workers=workers) as ex:
             rows = list(ex.map(_one, ids))
 
-    meta = {pid: (path, h, w) for pid, path, h, w in rows}
+    meta = {pid: (path, h, w) for pid, path, h, w in rows if path is not None}
+    n_skipped = len(rows) - len(meta)
+    if n_skipped:
+        logger.warning("%d/%d DICOMs skipped (corrupt/unreadable)", n_skipped, len(rows))
+
     df = df.copy()
+    df = df[df[id_col].isin(meta)]  # drop every row for a skipped id, not just the image
     df["png_path"] = df[id_col].map(lambda p: meta[p][0])
     df["orig_h"] = df[id_col].map(lambda p: meta[p][1])
     df["orig_w"] = df[id_col].map(lambda p: meta[p][2])
-    logger.info("cached %d PNGs (%d rows) to %s", len(ids), len(df), out_dir)
+    logger.info("cached %d PNGs (%d rows) to %s", len(meta), len(df), out_dir)
     return df
     # ponytail: always decodes DICOM for orig dims even when PNG exists. Add a dims
     # sidecar (json) if re-runs on a warm cache get slow.
