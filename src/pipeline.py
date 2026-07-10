@@ -92,7 +92,7 @@ def run_all(cfg: Config) -> str:
     log.info("[7/8] predict on held-out test")
     test_df = full[full["split"] == "test"]
     test_imgs = test_df["png_path"].drop_duplicates().tolist()
-    preds = predict_boxes(model, test_imgs)
+    preds = predict_boxes(model, test_imgs, imgsz=cfg.png_size)
     gts = [_scaled_gt(test_df, Path(p).stem, cfg.png_size) for p in test_imgs]
 
     log.info("[8/8] score: mAP@50 + calibration + uncertainty")

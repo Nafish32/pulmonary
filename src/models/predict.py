@@ -5,16 +5,21 @@ from __future__ import annotations
 import numpy as np
 
 
-def predict_boxes(model, image_paths, conf: float = 0.001):
+def predict_boxes(model, image_paths, conf: float = 0.001, imgsz: int = 640):
     """Run inference. Low default conf so calibration sees all predictions.
+
+    imgsz MUST match the png_size the GT is scaled to (see pipeline._scaled_gt),
+    or predictions and GT live in different coordinate frames and every IoU is wrong.
 
     Returns:
         List (one per image) of dicts: {"boxes": (N,4) xyxy float, "scores": (N,)}.
     """
-    # stream=True: yield per-image results instead of stacking the whole list into
-    # one batch tensor -- a flat list source made ultralytics alloc ~12 GiB at once
-    # and OOM'd the T4. Generator keeps memory bounded; the loop below consumes it.
-    results = model.predict(list(image_paths), conf=conf, verbose=False, stream=True)
+    # imgsz caps the forward pass: without it ultralytics runs at the PNG's native
+    # ~3000px and one conv2d alloc'd ~12 GiB, OOM'ing the T4. stream=True yields
+    # per-image so nothing stacks. Both together keep memory bounded.
+    results = model.predict(
+        list(image_paths), conf=conf, imgsz=imgsz, verbose=False, stream=True
+    )
     out = []
     for r in results:
         b = r.boxes
