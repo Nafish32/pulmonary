@@ -99,6 +99,14 @@ def run_all(cfg: Config) -> str:
     mAP = map50(preds, gts)
     conf, correct = label_tp_fp(preds, gts)
 
+    # conf=0.001 floor floods trust metrics with low-conf FPs on background images
+    # (most images have zero GT -> automatic FP regardless of confidence), which
+    # degenerates ECE/AURC. mAP keeps the full unfiltered set for recall; calibration
+    # and referral score only preds a triage system would actually surface.
+    TRUST_CONF_GATE = 0.05
+    gate = conf >= TRUST_CONF_GATE
+    conf_t, correct_t = conf[gate], correct[gate]
+
     lines = [
         "# Results",
         "",
@@ -107,16 +115,17 @@ def run_all(cfg: Config) -> str:
         f"- detector loaded: `{loaded_name}`",
         f"- fast_mode={cfg.fast_mode} epochs={cfg.epochs} png_size={cfg.png_size}",
         f"- kaggle_dataset_version: {cfg.kaggle_dataset_version}",
-        f"- test images: {len(test_imgs)}, predictions: {conf.size}",
+        f"- test images: {len(test_imgs)}, predictions: {conf.size} "
+        f"(conf>={TRUST_CONF_GATE}: {conf_t.size})",
         f"- **mAP@50**: {mAP:.4f}",
     ]
 
     ece = risk = None
-    if cfg.calibration_enabled and conf.size:
-        ece = ece_score(conf, correct, cfg.n_bins)
-        brier = brier_score(conf, correct)
-        T = fit_temperature(conf, correct)
-        reliability_diagram(conf, correct, cfg.n_bins, str(work / "reliability.png"))
+    if cfg.calibration_enabled and conf_t.size:
+        ece = ece_score(conf_t, correct_t, cfg.n_bins)
+        brier = brier_score(conf_t, correct_t)
+        T = fit_temperature(conf_t, correct_t)
+        reliability_diagram(conf_t, correct_t, cfg.n_bins, str(work / "reliability.png"))
         lines += [
             f"- ECE ({cfg.n_bins} bins): {ece:.4f}",
             f"- Brier: {brier:.4f}",
@@ -124,8 +133,8 @@ def run_all(cfg: Config) -> str:
             "- reliability diagram: `reliability.png`",
         ]
 
-    if cfg.uncertainty_enabled and conf.size:
-        risk = aurc(conf, correct)
+    if cfg.uncertainty_enabled and conf_t.size:
+        risk = aurc(conf_t, correct_t)
         lines.append(f"- AURC (risk-coverage): {risk:.4f}")
 
     # one-line go/no-go banner (also the first line of results.md).
