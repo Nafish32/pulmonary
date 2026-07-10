@@ -11,7 +11,10 @@ def predict_boxes(model, image_paths, conf: float = 0.001):
     Returns:
         List (one per image) of dicts: {"boxes": (N,4) xyxy float, "scores": (N,)}.
     """
-    results = model.predict(list(image_paths), conf=conf, verbose=False)
+    # stream=True: yield per-image results instead of stacking the whole list into
+    # one batch tensor -- a flat list source made ultralytics alloc ~12 GiB at once
+    # and OOM'd the T4. Generator keeps memory bounded; the loop below consumes it.
+    results = model.predict(list(image_paths), conf=conf, verbose=False, stream=True)
     out = []
     for r in results:
         b = r.boxes
