@@ -5,7 +5,8 @@ from __future__ import annotations
 import numpy as np
 
 
-def predict_boxes(model, image_paths, conf: float = 0.001, imgsz: int = 640):
+def predict_boxes(model, image_paths, conf: float = 0.001, imgsz: int = 640,
+                  batch: int = 8):
     """Run inference. Low default conf so calibration sees all predictions.
 
     imgsz MUST match the png_size the GT is scaled to (see pipeline._scaled_gt),
@@ -14,22 +15,24 @@ def predict_boxes(model, image_paths, conf: float = 0.001, imgsz: int = 640):
     Returns:
         List (one per image) of dicts: {"boxes": (N,4) xyxy float, "scores": (N,)}.
     """
-    # imgsz caps the forward pass: without it ultralytics runs at the PNG's native
-    # ~3000px and one conv2d alloc'd ~12 GiB, OOM'ing the T4. stream=True yields
-    # per-image so nothing stacks. Both together keep memory bounded.
-    results = model.predict(
-        list(image_paths), conf=conf, imgsz=imgsz, verbose=False, stream=True
-    )
+    # A Python-list source hits ultralytics autocast_list -> LoadPilAndNumpy with
+    # bs=len(list): the WHOLE test set forwards as one batch (750 imgs @ 640 ->
+    # one 18 GiB conv alloc, T4 OOM). stream=True doesn't help; it only streams
+    # results. Chunk the list so each predict() call is a bounded small batch.
+    paths = list(image_paths)
     out = []
-    for r in results:
-        b = r.boxes
-        if b is None or len(b) == 0:
-            out.append({"boxes": np.zeros((0, 4)), "scores": np.zeros((0,))})
-            continue
-        out.append({
-            "boxes": b.xyxy.cpu().numpy(),
-            "scores": b.conf.cpu().numpy(),
-        })
+    for i in range(0, len(paths), batch):
+        for r in model.predict(
+            paths[i:i + batch], conf=conf, imgsz=imgsz, verbose=False
+        ):
+            b = r.boxes
+            if b is None or len(b) == 0:
+                out.append({"boxes": np.zeros((0, 4)), "scores": np.zeros((0,))})
+                continue
+            out.append({
+                "boxes": b.xyxy.cpu().numpy(),
+                "scores": b.conf.cpu().numpy(),
+            })
     return out
 
 
