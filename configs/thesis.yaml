@@ -1,6 +1,6 @@
 # Full thesis-numbers run. fast_mode MUST be false here.
 fast_mode: false
-epochs: 40
+epochs: 50
 imgsz: 640
 fallback_imgsz: 512
 batch: 12

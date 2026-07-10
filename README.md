@@ -26,7 +26,7 @@ python train.py configs/debug.yaml  # (once stages are implemented)
 
 | file | fast_mode | epochs | use |
 |------|-----------|--------|-----|
-| `configs/thesis.yaml` | false | 40 | full thesis numbers |
+| `configs/thesis.yaml` | false | 50 | full thesis numbers |
 | `configs/fast.yaml`   | true  | 5  | smoke the chain on Kaggle |
 | `configs/debug.yaml`  | true  | 1  | 5-image synthetic, CPU, <2 min |
 
