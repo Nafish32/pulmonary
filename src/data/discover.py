@@ -19,9 +19,19 @@ logger = get_logger(__name__)
 _DICOM_EXTS = {".dcm", ".dicom"}
 
 
-def _first(root: Path, pattern: str) -> Path | None:
-    """First path under ``root`` matching glob ``pattern`` (sorted, stable)."""
-    matches = sorted(root.rglob(pattern))
+def _first(root: Path, name: str) -> Path | None:
+    """First path matching bare filename ``name`` under ``root``.
+
+    Shallow depths first (``root/name``, ``root/*/name`` ...), rglob only as a
+    last resort. Kaggle markers sit 1-2 levels below the mount, so this avoids
+    descending into the ~26k-file image dirs -- rglob over the whole mount, run
+    once per marker, was the multi-minute stall at stage [1/8].
+    """
+    for depth in range(4):
+        matches = sorted(root.glob("*/" * depth + name))
+        if matches:
+            return matches[0]
+    matches = sorted(root.rglob(name))  # fallback: unusually deep layout
     return matches[0] if matches else None
 
 
@@ -64,7 +74,12 @@ def discover_datasets(input_root: str | Path) -> dict:
     out["rsna_images_dir"] = rsna_images
 
     # --- VinDr / VinBigData (optional external eval) ---
-    vin_csv = _first(root, "*/vinbigdata*/train.csv") or _first(root, "*vin*/train.csv")
+    # shallow scan for any train.csv, keep the one whose mount slug looks like VinDr.
+    vin_csv = None
+    for cand in sorted(root.glob("*/train.csv")) + sorted(root.glob("*/*/train.csv")):
+        if "vin" in str(cand.parent).lower():
+            vin_csv = cand
+            break
     vin_images = None
     if vin_csv is not None:
         cand = vin_csv.parent / "train"
@@ -75,7 +90,12 @@ def discover_datasets(input_root: str | Path) -> dict:
         logger.warning("VinDr not found under %s (external validation will skip)", root)
 
     # --- CheXpert (optional pretrain, no boxes) ---
-    out["chexpert_csv"] = _first(root, "*chexpert*/train.csv")
+    chexpert = None
+    for cand in sorted(root.glob("*/train.csv")) + sorted(root.glob("*/*/train.csv")):
+        if "chexpert" in str(cand.parent).lower():
+            chexpert = cand
+            break
+    out["chexpert_csv"] = chexpert
 
     logger.info(
         "discovered: rsna=%s vin=%s chexpert=%s",
