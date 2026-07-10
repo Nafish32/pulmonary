@@ -50,36 +50,52 @@ def run_all(cfg: Config) -> str:
     from .uncertainty.referral import aurc
 
     work = ensure_dir(Path(cfg.working_root) / "outputs")
+    log.info("=== run_all START (fast_mode=%s epochs=%s) ===", cfg.fast_mode, cfg.epochs)
 
     # --- data ---
+    log.info("[1/8] discover datasets under %s (rglob -- can be slow)", cfg.input_root)
     ds = discover_datasets(cfg.input_root)
+    log.info("[1/8] found rsna_csv=%s images=%s", ds["rsna_csv"], ds["rsna_images_dir"])
+
+    log.info("[2/8] read labels csv")
     df = pd.read_csv(ds["rsna_csv"])
     # subset for a quick probe: debug_mode=50 (plumbing), else max_patients (real signal).
     limit = 50 if cfg.debug_mode else cfg.max_patients
     ids = df["patientId"].unique()
+    log.info("[2/8] %d rows, %d patients", len(df), len(ids))
     if limit and limit < len(ids):
         keep = np.random.default_rng(cfg.seed).choice(ids, size=limit, replace=False)
         df = df[df["patientId"].isin(keep)]
-        log.info("subset to %d/%d patients (seed=%d)", limit, len(ids), cfg.seed)
+        log.info("[2/8] subset to %d/%d patients (seed=%d)", limit, len(ids), cfg.seed)
 
+    log.info("[3/8] patient-wise split")
     tr, va, te = patient_split(df, cfg.split)
     for part, name in ((tr, "train"), (va, "val"), (te, "test")):
         part["split"] = name
     full = pd.concat([tr, va, te], ignore_index=True)
+
+    n_imgs = full["patientId"].nunique()
+    log.info("[4/8] cache %d DICOMs -> PNG (IO-bound, near-zero CPU)", n_imgs)
     full = build_png_cache(full, ds["rsna_images_dir"], work / "png", cfg)
+
+    log.info("[5/8] export YOLO dataset tree")
     data_yaml = export_split(full, work / "dataset", cfg)
 
     # --- detector ---
+    log.info("[6/8] load detector (may download weights -- needs Internet ON)")
     model, loaded_name = load_detector(cfg.detector_fallback_chain)
+    log.info("[6/8] loaded %s; training (GPU wakes here)", loaded_name)
     weights, _ = train_detector(model, data_yaml, cfg)
-    log.info("trained %s -> %s", loaded_name, weights)
+    log.info("[6/8] trained %s -> %s", loaded_name, weights)
 
     # --- evaluation on held-out test ---
+    log.info("[7/8] predict on held-out test")
     test_df = full[full["split"] == "test"]
     test_imgs = test_df["png_path"].drop_duplicates().tolist()
     preds = predict_boxes(model, test_imgs)
     gts = [_scaled_gt(test_df, Path(p).stem, cfg.png_size) for p in test_imgs]
 
+    log.info("[8/8] score: mAP@50 + calibration + uncertainty")
     mAP = map50(preds, gts)
     conf, correct = label_tp_fp(preds, gts)
 
