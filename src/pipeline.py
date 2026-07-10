@@ -95,6 +95,7 @@ def run_all(cfg: Config) -> str:
         f"- **mAP@50**: {mAP:.4f}",
     ]
 
+    ece = risk = None
     if cfg.calibration_enabled and conf.size:
         ece = ece_score(conf, correct, cfg.n_bins)
         brier = brier_score(conf, correct)
@@ -108,9 +109,22 @@ def run_all(cfg: Config) -> str:
         ]
 
     if cfg.uncertainty_enabled and conf.size:
-        lines.append(f"- AURC (risk-coverage): {aurc(conf, correct):.4f}")
+        risk = aurc(conf, correct)
+        lines.append(f"- AURC (risk-coverage): {risk:.4f}")
+
+    # one-line go/no-go banner (also the first line of results.md).
+    def _fmt(v):
+        return "n/a" if v is None else f"{v:.4f}"
+
+    summary = (
+        f"[PROBE] {loaded_name} | patients~{test_df['patientId'].nunique()} test | "
+        f"mAP@50={_fmt(mAP)} ECE={_fmt(ece)} AURC={_fmt(risk)} "
+        f"(fast_mode={cfg.fast_mode}, epochs={cfg.epochs})"
+    )
+    lines.insert(1, f"\n`{summary}`\n")
 
     results = work / "results.md"
     results.write_text("\n".join(lines) + "\n")
+    log.info(summary)  # prints loudly at the end of the run
     log.info("wrote %s", results)
     return str(results)
