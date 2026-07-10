@@ -7,3 +7,4 @@ __pycache__/
 *.onnx
 .pytest_cache/
 keyword-glossary.html
+CLAUDE.md
