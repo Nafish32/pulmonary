@@ -37,3 +37,15 @@ def test_valid_config_defaults():
     assert c.split.train + c.split.val + c.split.test == pytest.approx(1.0)
     assert c.n_bins == 15
     assert c.detector_fallback_chain[0] == "yolo26m.pt"
+    assert c.max_patients is None  # full data unless a probe config sets it
+
+
+def test_shipped_configs_load():
+    # every configs/*.yaml must validate against the schema (fast.yaml uses max_patients)
+    from pathlib import Path
+
+    from src.config.loader import load_config
+
+    cfgs = Path(__file__).resolve().parents[1] / "configs"
+    assert load_config(cfgs / "fast.yaml").max_patients == 1500
+    assert load_config(cfgs / "thesis.yaml").max_patients is None

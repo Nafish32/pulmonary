@@ -54,9 +54,13 @@ def run_all(cfg: Config) -> str:
     # --- data ---
     ds = discover_datasets(cfg.input_root)
     df = pd.read_csv(ds["rsna_csv"])
-    if cfg.debug_mode:  # tiny slice for the 1-epoch smoke run
-        keep = df["patientId"].unique()[:50]
+    # subset for a quick probe: debug_mode=50 (plumbing), else max_patients (real signal).
+    limit = 50 if cfg.debug_mode else cfg.max_patients
+    ids = df["patientId"].unique()
+    if limit and limit < len(ids):
+        keep = np.random.default_rng(cfg.seed).choice(ids, size=limit, replace=False)
         df = df[df["patientId"].isin(keep)]
+        log.info("subset to %d/%d patients (seed=%d)", limit, len(ids), cfg.seed)
 
     tr, va, te = patient_split(df, cfg.split)
     for part, name in ((tr, "train"), (va, "val"), (te, "test")):

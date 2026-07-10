@@ -58,6 +58,7 @@ class Config(BaseModel):
     optional_compare_model_name: str | None = None
     num_workers: int = 8
     cache_png: bool = True
+    max_patients: int | None = None  # subset to N random patients (quick-but-real probe); None = all
 
     # --- stages ---
     calibration_enabled: bool = True
