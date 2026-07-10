@@ -9,6 +9,17 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _run_name(cfg) -> str:
+    """fast.yaml/debug.yaml vs thesis.yaml get separate checkpoint slots.
+
+    Without this, switching configs in the same Kaggle session (e.g. probe
+    with fast.yaml, then the real thesis.yaml run) would find the probe's
+    last.pt sitting at the shared path and try to resume IT -- wrong
+    imgsz/batch/dataset, silently wrong numbers or a hard error.
+    """
+    return "train_thesis" if not cfg.fast_mode else "train_fast"
+
+
 def checkpoint_path(cfg) -> Path:
     """Stable last.pt location, outside the repo clone.
 
@@ -18,7 +29,7 @@ def checkpoint_path(cfg) -> Path:
     ever see it. This path lives under working_root instead, a sibling of the
     repo clone, so it survives a Cell 1 re-run within the same Kaggle session.
     """
-    return Path(cfg.working_root) / "outputs" / "runs" / "train" / "weights" / "last.pt"
+    return Path(cfg.working_root) / "outputs" / "runs" / _run_name(cfg) / "weights" / "last.pt"
 
 
 def train_detector(model, data_yaml: str, cfg):
@@ -32,9 +43,9 @@ def train_detector(model, data_yaml: str, cfg):
         (best_weights_path, results).
     """
     last = checkpoint_path(cfg)
-    # ponytail: single fixed run slot (exist_ok=True, name="train") -- no
-    # multi-run history. Fine since one thesis run is the actual use pattern;
-    # revisit if parallel/multiple concurrent runs are ever needed.
+    # ponytail: one fixed run slot per fast/thesis mode (exist_ok=True) -- no
+    # multi-run history. Fine since one run of each kind is the actual use
+    # pattern; revisit if parallel/multiple concurrent runs are ever needed.
     kw = dict(
         data=data_yaml,
         epochs=cfg.epochs,
@@ -45,7 +56,7 @@ def train_detector(model, data_yaml: str, cfg):
         amp=True,  # mixed precision
         verbose=True,
         project=str(last.parent.parent.parent),
-        name="train",
+        name=_run_name(cfg),
         exist_ok=True,
     )
 
