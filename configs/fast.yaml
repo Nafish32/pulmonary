@@ -1,4 +1,4 @@
-# Quick-but-real probe: 1500-patient random slice, few epochs. Enough to judge
+# Quick-but-real probe: 5000-patient random slice, 20 epochs. Enough to judge
 # whether the methodology is worth pursuing -- NOT thesis-grade numbers.
 fast_mode: true
 epochs: 20

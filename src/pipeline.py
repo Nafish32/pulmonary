@@ -37,8 +37,9 @@ def _scaled_gt(test_df, stem, png_size):
 def _build_full_df(cfg: Config, work: Path):
     """Stages 1-4: discover -> read labels -> patient split -> DICOM->PNG cache.
 
-    Returns ``full`` (df with split/png_path/orig_h/orig_w). Deterministic given
-    cfg.seed, so run_all and eval_from_weights rebuild the SAME test split.
+    Returns ``(full, ds)`` -- df (split/png_path/orig_h/orig_w) + the discovery
+    dict (RSNA + optional VinDr paths). Deterministic given cfg.seed, so run_all
+    and eval_from_weights rebuild the SAME test split.
     """
     from .data.cache import build_png_cache
     from .data.discover import discover_datasets
@@ -68,14 +69,151 @@ def _build_full_df(cfg: Config, work: Path):
     n_imgs = full["patientId"].nunique()
     log.info("[4/8] cache %d DICOMs -> PNG (IO-bound, near-zero CPU)", n_imgs)
     full = build_png_cache(full, ds["rsna_images_dir"], work / "png", cfg)
-    return full
+    return full, ds
 
 
-def _evaluate(cfg: Config, weights: str, full, loaded_name: str, work: Path) -> str:
+def _positive_test_rows(test_df, n: int):
+    """Up to ``n`` unique positive (Target==1) test images -- the ones with a GT
+    box, so energy-in-box / mAP-degradation have something to measure against."""
+    pos = test_df[test_df["Target"] == 1].drop_duplicates("patientId")
+    return pos.head(n)
+
+
+def _load_img_gt(test_df, png_path, cfg):
+    """(uint8 png_size-square array, first GT box xyxy in png_size frame) or (None, None)."""
+    import cv2
+
+    img = cv2.imread(png_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return None, None
+    g = _scaled_gt(test_df, Path(png_path).stem, cfg.png_size)
+    return img, (g[0] if len(g) else None)
+
+
+def _xai_report(model, test_df, cfg) -> list[str]:
+    """XAI validation: mean saliency energy-in-GT-box over positive test images.
+
+    Grad-CAM++ + EigenCAM (ScoreCAM is slow; skipped in the loop). Energy near 1
+    = saliency concentrates on the lesion; near box_area/image_area = no better
+    than uniform. Target layer for a YOLO backbone is NOT VERIFIED across
+    ultralytics versions -> guarded: on any failure, log + report skip, never
+    crash the run.
+    """
+    from .explainability.eigencam import eigencam
+    from .explainability.evaluation import saliency_energy_in_box
+    from .explainability.gradcam import gradcam
+
+    pos = _positive_test_rows(test_df, cfg.xai_samples)
+    if len(pos) == 0:
+        return ["- XAI: no positive test images, skipped"]
+
+    # NOT VERIFIED: layer[-2] (last C3k2 before the Detect head) is the usual CAM
+    # target for this backbone. Eyeball one map before trusting the number.
+    try:
+        target = model.model.model[-2]
+    except Exception as e:  # noqa: BLE001
+        return [f"- XAI: could not resolve target layer ({e}), skipped"]
+
+    methods = {"gradcam++": gradcam, "eigencam": eigencam}
+    energies = {name: [] for name in methods}
+    for r in pos.itertuples():
+        img, box = _load_img_gt(test_df, r.png_path, cfg)
+        if img is None or box is None:
+            continue
+        for name, fn in methods.items():
+            try:
+                e = saliency_energy_in_box(fn(model, img, target), box)
+                if e == e:  # not NaN
+                    energies[name].append(e)
+            except Exception as ex:  # noqa: BLE001 -- one method/image failing != run failing
+                log.warning("XAI %s failed on %s: %s", name, r.patientId, ex)
+
+    lines = ["- XAI saliency energy-in-box (positives, higher=better):"]
+    any_ok = False
+    for name, es in energies.items():
+        if es:
+            any_ok = True
+            lines.append(f"  - {name}: {np.mean(es):.3f} (n={len(es)})")
+    return lines if any_ok else ["- XAI: all methods failed (see logs), skipped"]
+
+
+def _robustness_report(model, test_df, cfg) -> list[str]:
+    """Corruption sweep on a positive-image subset: worst-case mAP drop + ECE drift."""
+    from .robustness.benchmark import run_robustness
+
+    pos = _positive_test_rows(test_df, cfg.robustness_samples)
+    imgs, gts = [], []
+    for r in pos.itertuples():
+        img, _ = _load_img_gt(test_df, r.png_path, cfg)
+        g = _scaled_gt(test_df, r.patientId, cfg.png_size)
+        if img is not None and len(g):
+            imgs.append(img)
+            gts.append(g)
+    if len(imgs) < 5:
+        return [f"- robustness: only {len(imgs)} usable positive images, skipped"]
+
+    res = run_robustness(model, imgs, gts, cfg)
+    clean_map, clean_ece = res["clean"]
+    # worst = biggest mAP drop across all (kind, severity).
+    worst_key, (worst_map, worst_ece) = min(
+        ((k, v) for k, v in res.items() if k != "clean"), key=lambda kv: kv[1][0]
+    )
+    return [
+        f"- robustness ({len(imgs)} imgs): clean mAP@50={clean_map:.4f} ECE={clean_ece:.4f}",
+        f"  - worst case {worst_key}: mAP@50={worst_map:.4f} "
+        f"(drop {clean_map - worst_map:.4f}), ECE={worst_ece:.4f} "
+        f"(drift {worst_ece - clean_ece:+.4f})",
+    ]
+
+
+def _external_report(model, ds, cfg, work) -> list[str]:
+    """VinDr cross-domain: triage AUROC + calibration drift, NO recalibration."""
+    if ds.get("vin_csv") is None or ds.get("vin_images_dir") is None:
+        return ["- external (VinDr): dataset not attached, skipped"]
+    from .evaluation.external_validation import build_vindr_eval_set, external_validate
+
+    vin_eval = build_vindr_eval_set(ds["vin_csv"], n_max=1000, seed=cfg.seed)
+    res = external_validate(model, vin_eval, ds["vin_images_dir"], cfg, work / "vindr_png")
+    if res["n"] == 0:
+        return ["- external (VinDr): no images could be cached, skipped"]
+    return [
+        f"- external (VinDr, n={res['n']}, no recalibration): "
+        f"triage AUROC={res['auroc']:.4f}, image-level ECE={res['ece']:.4f}",
+    ]
+
+
+def _ensemble_report(models, test_df, cfg) -> list[str]:
+    """Mean per-image confidence spread (std across seeds) = ensemble uncertainty."""
+    if not models or len(models) < 2:
+        return ["- ensemble: single model, spread not meaningful (set ensemble_seeds "
+                "to >=2 seeds for this metric)"]
+    from .uncertainty.ensemble import ensemble_uncertainty
+
+    imgs = test_df["png_path"].drop_duplicates().tolist()
+    spread = ensemble_uncertainty(models, imgs)
+    mean_std = float(np.mean([s["std_conf"] for s in spread]))
+    return [f"- ensemble ({len(models)} seeds): mean per-image conf std={mean_std:.4f} "
+            "(higher = more disagreement = more uncertain)"]
+
+
+def _guarded(lines, label, fn, *args):
+    """Append fn()'s report lines to ``lines``; on any error, append one note and
+    continue -- one broken analysis stage must never sink a 12hr run's results."""
+    try:
+        lines += fn(*args)
+    except Exception as e:  # noqa: BLE001
+        log.warning("%s stage failed: %s", label, e)
+        lines.append(f"- {label}: FAILED ({e})")
+
+
+def _evaluate(cfg: Config, weights: str, full, ds, loaded_name: str, work: Path,
+              ensemble_models=None) -> str:
     """Stages 7-8: predict on held-out test from ``weights`` -> results.md.
 
-    Shared by run_all and eval_from_weights. Always loads best.pt fresh -- never
-    a stale in-memory model (a resume run leaves pipeline's model untrained).
+    Detection + calibration + referral, then the trust package (XAI, robustness,
+    external VinDr, ensemble) -- each guarded so a failure degrades to a note in
+    results.md, never a lost run. Always loads best.pt fresh -- never a stale
+    in-memory model (a resume run leaves pipeline's model untrained).
     """
     from .calibration.reliability import brier_score, ece_score
     from .calibration.temperature_scaling import fit_temperature
@@ -92,7 +230,7 @@ def _evaluate(cfg: Config, weights: str, full, loaded_name: str, work: Path) -> 
     preds = predict_boxes(best_model, test_imgs, imgsz=cfg.png_size)
     gts = [_scaled_gt(test_df, Path(p).stem, cfg.png_size) for p in test_imgs]
 
-    log.info("[8/8] score: mAP@50 + calibration + uncertainty")
+    log.info("[8/8] score: mAP@50 + calibration + uncertainty + trust package")
     mAP = map50(preds, gts)
     conf, correct = label_tp_fp(preds, gts)
 
@@ -134,6 +272,19 @@ def _evaluate(cfg: Config, weights: str, full, loaded_name: str, work: Path) -> 
         risk = aurc(conf_t, correct_t)
         lines.append(f"- AURC (risk-coverage): {risk:.4f}")
 
+    # --- trust package (each guarded; a failure = a note, not a lost run) ---
+    if cfg.xai_enabled:
+        log.info("[trust] XAI validation")
+        _guarded(lines, "XAI", _xai_report, best_model, test_df, cfg)
+    if cfg.robustness_enabled:
+        log.info("[trust] robustness sweep")
+        _guarded(lines, "robustness", _robustness_report, best_model, test_df, cfg)
+    if cfg.external_enabled:
+        log.info("[trust] external VinDr validation")
+        _guarded(lines, "external", _external_report, best_model, ds, cfg, work)
+    log.info("[trust] ensemble uncertainty")
+    _guarded(lines, "ensemble", _ensemble_report, ensemble_models, test_df, cfg)
+
     # one-line go/no-go banner (also the first line of results.md).
     def _fmt(v):
         return "n/a" if v is None else f"{v:.4f}"
@@ -159,33 +310,49 @@ def eval_from_weights(cfg: Config, weights: str) -> str:
     For recovering a run whose training finished but whose [7/8]/[8/8] eval was
     wrong (or you just want to re-score different weights). Reuses the exact same
     data prep + scoring as run_all, so numbers are comparable. Re-decodes DICOMs
-    for orig dims (~minutes on full RSNA) but skips the ~12hr train.
+    for orig dims (~minutes on full RSNA) but skips the ~12hr train. Single-model
+    (no ensemble spread -- that needs the multiple trained members run_all makes).
     """
     work = ensure_dir(Path(cfg.working_root) / "outputs")
     log.info("=== eval_from_weights START (weights=%s) ===", weights)
-    full = _build_full_df(cfg, work)
-    return _evaluate(cfg, weights, full, f"{Path(weights).name} (reload)", work)
+    full, ds = _build_full_df(cfg, work)
+    return _evaluate(cfg, weights, full, ds, f"{Path(weights).name} (reload)", work)
 
 
 def run_all(cfg: Config) -> str:
     """Run every stage end to end and return the path to results.md."""
     from .models.detector import load_detector
     from .models.export import export_split
-    from .models.train import train_detector
+    from .models.train import _run_name, train_detector
 
     work = ensure_dir(Path(cfg.working_root) / "outputs")
     log.info("=== run_all START (fast_mode=%s epochs=%s) ===", cfg.fast_mode, cfg.epochs)
 
-    full = _build_full_df(cfg, work)
+    full, ds = _build_full_df(cfg, work)
 
     log.info("[5/8] export YOLO dataset tree")
     data_yaml = export_split(full, work / "dataset", cfg)
 
-    # --- detector ---
+    # --- detector (primary, seed=cfg.seed) ---
     log.info("[6/8] load detector (may download weights -- needs Internet ON)")
     model, loaded_name = load_detector(cfg.detector_fallback_chain)
     log.info("[6/8] loaded %s; training (GPU wakes here)", loaded_name)
     weights, _ = train_detector(model, data_yaml, cfg)
     log.info("[6/8] trained %s -> %s", loaded_name, weights)
 
-    return _evaluate(cfg, weights, full, loaded_name, work)
+    # --- ensemble members (extra seeds; each is a FULL train, off by default) ---
+    ensemble_models = None
+    extra_seeds = [s for s in cfg.ensemble_seeds if s != cfg.seed]
+    if extra_seeds:
+        from ultralytics import YOLO
+
+        members = [YOLO(weights)]  # primary counts as seed cfg.seed
+        for s in extra_seeds:
+            log.info("[6/8] ensemble member seed=%d (another full train)", s)
+            m, _n = load_detector(cfg.detector_fallback_chain)
+            w, _ = train_detector(m, data_yaml, cfg, seed=s,
+                                  run_name=f"{_run_name(cfg)}_seed{s}")
+            members.append(YOLO(w))
+        ensemble_models = members
+
+    return _evaluate(cfg, weights, full, ds, loaded_name, work, ensemble_models)

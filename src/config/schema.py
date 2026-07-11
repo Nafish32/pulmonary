@@ -63,10 +63,17 @@ class Config(BaseModel):
     # --- stages ---
     calibration_enabled: bool = True
     uncertainty_enabled: bool = True
+    xai_enabled: bool = True
+    xai_samples: int = 20  # positive test images for saliency energy-in-box
     xai_methods: list[str] = Field(
         default_factory=lambda: ["eigencam", "gradcam", "scorecam"]
     )
     robustness_enabled: bool = True
+    robustness_samples: int = 200  # test-image subset for the sweep (full set = 15x inference)
+    external_enabled: bool = True  # VinDr cross-domain eval; skips cleanly if VinDr absent
+    # >1 seed => train that many members and report ensemble spread. Each extra seed
+    # is a FULL train (~12hr on thesis.yaml), so default is single-model (no spread).
+    ensemble_seeds: list[int] = Field(default_factory=lambda: [42])
     n_bins: int = 15  # shared by ECE and reliability diagram (was mismatched 15 vs 10)
 
     # --- data / paths / reproducibility ---
