@@ -51,6 +51,10 @@ class Config(BaseModel):
     batch: int = 12
     epochs: int  # REQUIRED, no default.
     png_size: int = 640
+    # "" = ultralytics auto (single GPU 0). "0,1" = DDP across both T4/P100 (~2x
+    # faster train, same effective batch). Multi-GPU DDP in a Kaggle notebook can
+    # be flaky -> fall back to "0" if it errors; checkpoint-resume protects progress.
+    device: str = ""
     detector_model_name: str = "yolo26m.pt"
     detector_fallback_chain: list[str] = Field(
         default_factory=lambda: ["yolo26m.pt", "yolo11m.pt", "yolov8m.pt"]

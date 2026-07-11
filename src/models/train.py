@@ -70,6 +70,8 @@ def train_detector(model, data_yaml: str, cfg, seed: int | None = None,
         name=slot,
         exist_ok=True,
     )
+    if cfg.device:  # "" -> ultralytics auto (GPU 0); "0,1" -> DDP across both
+        kw["device"] = cfg.device
 
     if last.exists():
         from ultralytics import YOLO
