@@ -89,10 +89,17 @@ def run_all(cfg: Config) -> str:
     log.info("[6/8] trained %s -> %s", loaded_name, weights)
 
     # --- evaluation on held-out test ---
-    log.info("[7/8] predict on held-out test")
+    # Load best.pt for eval, NOT the in-memory `model`. On a resume run
+    # train_detector rebinds its own local YOLO(last.pt) and trains that;
+    # pipeline's `model` stays the untrained pretrained object -> every pred
+    # garbage -> mAP=0. Reloading `weights` also gets BEST, not last-epoch.
+    from ultralytics import YOLO
+
+    log.info("[7/8] predict on held-out test (from %s)", weights)
+    best_model = YOLO(weights)
     test_df = full[full["split"] == "test"]
     test_imgs = test_df["png_path"].drop_duplicates().tolist()
-    preds = predict_boxes(model, test_imgs, imgsz=cfg.png_size)
+    preds = predict_boxes(best_model, test_imgs, imgsz=cfg.png_size)
     gts = [_scaled_gt(test_df, Path(p).stem, cfg.png_size) for p in test_imgs]
 
     log.info("[8/8] score: mAP@50 + calibration + uncertainty")
