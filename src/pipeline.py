@@ -34,25 +34,16 @@ def _scaled_gt(test_df, stem, png_size):
     return g * np.array([sx, sy, sx, sy])
 
 
-def run_all(cfg: Config) -> str:
-    """Run every stage end to end and return the path to results.md."""
-    from .calibration.reliability import brier_score, ece_score
-    from .calibration.temperature_scaling import fit_temperature
+def _build_full_df(cfg: Config, work: Path):
+    """Stages 1-4: discover -> read labels -> patient split -> DICOM->PNG cache.
+
+    Returns ``full`` (df with split/png_path/orig_h/orig_w). Deterministic given
+    cfg.seed, so run_all and eval_from_weights rebuild the SAME test split.
+    """
     from .data.cache import build_png_cache
     from .data.discover import discover_datasets
     from .data.split import patient_split
-    from .evaluation.metrics import label_tp_fp, map50
-    from .evaluation.plots import reliability_diagram
-    from .models.detector import load_detector
-    from .models.export import export_split
-    from .models.predict import predict_boxes
-    from .models.train import train_detector
-    from .uncertainty.referral import aurc
 
-    work = ensure_dir(Path(cfg.working_root) / "outputs")
-    log.info("=== run_all START (fast_mode=%s epochs=%s) ===", cfg.fast_mode, cfg.epochs)
-
-    # --- data ---
     log.info("[1/8] discover datasets under %s (rglob -- can be slow)", cfg.input_root)
     ds = discover_datasets(cfg.input_root)
     log.info("[1/8] found rsna_csv=%s images=%s", ds["rsna_csv"], ds["rsna_images_dir"])
@@ -77,22 +68,21 @@ def run_all(cfg: Config) -> str:
     n_imgs = full["patientId"].nunique()
     log.info("[4/8] cache %d DICOMs -> PNG (IO-bound, near-zero CPU)", n_imgs)
     full = build_png_cache(full, ds["rsna_images_dir"], work / "png", cfg)
+    return full
 
-    log.info("[5/8] export YOLO dataset tree")
-    data_yaml = export_split(full, work / "dataset", cfg)
 
-    # --- detector ---
-    log.info("[6/8] load detector (may download weights -- needs Internet ON)")
-    model, loaded_name = load_detector(cfg.detector_fallback_chain)
-    log.info("[6/8] loaded %s; training (GPU wakes here)", loaded_name)
-    weights, _ = train_detector(model, data_yaml, cfg)
-    log.info("[6/8] trained %s -> %s", loaded_name, weights)
+def _evaluate(cfg: Config, weights: str, full, loaded_name: str, work: Path) -> str:
+    """Stages 7-8: predict on held-out test from ``weights`` -> results.md.
 
-    # --- evaluation on held-out test ---
-    # Load best.pt for eval, NOT the in-memory `model`. On a resume run
-    # train_detector rebinds its own local YOLO(last.pt) and trains that;
-    # pipeline's `model` stays the untrained pretrained object -> every pred
-    # garbage -> mAP=0. Reloading `weights` also gets BEST, not last-epoch.
+    Shared by run_all and eval_from_weights. Always loads best.pt fresh -- never
+    a stale in-memory model (a resume run leaves pipeline's model untrained).
+    """
+    from .calibration.reliability import brier_score, ece_score
+    from .calibration.temperature_scaling import fit_temperature
+    from .evaluation.metrics import label_tp_fp, map50
+    from .evaluation.plots import reliability_diagram
+    from .models.predict import predict_boxes
+    from .uncertainty.referral import aurc
     from ultralytics import YOLO
 
     log.info("[7/8] predict on held-out test (from %s)", weights)
@@ -148,8 +138,9 @@ def run_all(cfg: Config) -> str:
     def _fmt(v):
         return "n/a" if v is None else f"{v:.4f}"
 
+    tag = "PROBE" if cfg.fast_mode else "THESIS"
     summary = (
-        f"[PROBE] {loaded_name} | patients~{test_df['patientId'].nunique()} test | "
+        f"[{tag}] {loaded_name} | patients~{test_df['patientId'].nunique()} test | "
         f"mAP@50={_fmt(mAP)} ECE={_fmt(ece)} AURC={_fmt(risk)} "
         f"(fast_mode={cfg.fast_mode}, epochs={cfg.epochs})"
     )
@@ -160,3 +151,41 @@ def run_all(cfg: Config) -> str:
     log.info(summary)  # prints loudly at the end of the run
     log.info("wrote %s", results)
     return str(results)
+
+
+def eval_from_weights(cfg: Config, weights: str) -> str:
+    """Skip training: rebuild the test split + score an existing best.pt.
+
+    For recovering a run whose training finished but whose [7/8]/[8/8] eval was
+    wrong (or you just want to re-score different weights). Reuses the exact same
+    data prep + scoring as run_all, so numbers are comparable. Re-decodes DICOMs
+    for orig dims (~minutes on full RSNA) but skips the ~12hr train.
+    """
+    work = ensure_dir(Path(cfg.working_root) / "outputs")
+    log.info("=== eval_from_weights START (weights=%s) ===", weights)
+    full = _build_full_df(cfg, work)
+    return _evaluate(cfg, weights, full, f"{Path(weights).name} (reload)", work)
+
+
+def run_all(cfg: Config) -> str:
+    """Run every stage end to end and return the path to results.md."""
+    from .models.detector import load_detector
+    from .models.export import export_split
+    from .models.train import train_detector
+
+    work = ensure_dir(Path(cfg.working_root) / "outputs")
+    log.info("=== run_all START (fast_mode=%s epochs=%s) ===", cfg.fast_mode, cfg.epochs)
+
+    full = _build_full_df(cfg, work)
+
+    log.info("[5/8] export YOLO dataset tree")
+    data_yaml = export_split(full, work / "dataset", cfg)
+
+    # --- detector ---
+    log.info("[6/8] load detector (may download weights -- needs Internet ON)")
+    model, loaded_name = load_detector(cfg.detector_fallback_chain)
+    log.info("[6/8] loaded %s; training (GPU wakes here)", loaded_name)
+    weights, _ = train_detector(model, data_yaml, cfg)
+    log.info("[6/8] trained %s -> %s", loaded_name, weights)
+
+    return _evaluate(cfg, weights, full, loaded_name, work)
