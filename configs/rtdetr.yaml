@@ -1,0 +1,15 @@
+# RT-DETR second detector -- generality check: do the calibration-drift finding and
+# the label-free recalibration hold for a transformer detector, not just YOLO?
+# Same protocol as thesis.yaml; ONLY the detector family changes.
+fast_mode: false
+epochs: 50
+imgsz: 640
+fallback_imgsz: 512
+batch: 4              # RT-DETR-l is heavier than yolo26m; start small on T4 (OOM retry covers the rest)
+png_size: 640
+device: "0"          # single-GPU: Kaggle DDP is flaky and breaks checkpoint-resume
+detector_model_name: rtdetr-l.pt
+detector_fallback_chain: ["rtdetr-l.pt", "rtdetr-x.pt"]
+calibration_enabled: true
+uncertainty_enabled: true
+robustness_enabled: true

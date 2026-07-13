@@ -49,3 +49,6 @@ def test_shipped_configs_load():
     cfgs = Path(__file__).resolve().parents[1] / "configs"
     assert load_config(cfgs / "fast.yaml").max_patients == 5000
     assert load_config(cfgs / "thesis.yaml").max_patients is None
+    rtdetr = load_config(cfgs / "rtdetr.yaml")
+    assert rtdetr.detector_fallback_chain[0] == "rtdetr-l.pt"
+    assert rtdetr.device == "0"
