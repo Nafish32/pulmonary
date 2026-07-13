@@ -173,20 +173,37 @@ def _robustness_report(model, test_df, cfg) -> list[str]:
     ]
 
 
-def _external_report(model, ds, cfg, work) -> list[str]:
-    """VinDr cross-domain: triage AUROC + calibration drift, NO recalibration."""
+def _external_report(model, ds, cfg, work, src_score, src_label) -> list[str]:
+    """VinDr cross-domain: triage AUROC + calibration drift, then LABEL-FREE recal.
+
+    ``src_score``/``src_label`` = the in-domain (RSNA) image-level triage scores +
+    labels. The recalibration is fit source->target with NO VinDr labels; VinDr labels
+    are used only to score it. This is the thesis's method contribution.
+    """
     if ds.get("vin_csv") is None or ds.get("vin_images_dir") is None:
         return ["- external (VinDr): dataset not attached, skipped"]
+    from .calibration.recalibration import evaluate_recalibration
     from .evaluation.external_validation import build_vindr_eval_set, external_validate
 
     vin_eval = build_vindr_eval_set(ds["vin_csv"], n_max=1000, seed=cfg.seed)
     res = external_validate(model, vin_eval, ds["vin_images_dir"], cfg, work / "vindr_png")
     if res["n"] == 0:
         return ["- external (VinDr): no images could be cached, skipped"]
-    return [
+    lines = [
         f"- external (VinDr, n={res['n']}, no recalibration): "
         f"triage AUROC={res['auroc']:.4f}, image-level ECE={res['ece']:.4f}",
     ]
+
+    # label-free recalibration RSNA(source) -> VinDr(target): does confidence transfer?
+    rec = evaluate_recalibration(src_score, src_label, res["scores"], res["labels"],
+                                 cfg.n_bins, target_risk=0.10)
+    lines.append("- external recalibration (label-free; referral risk budget=0.10):")
+    for m, d in rec.items():
+        lines.append(
+            f"  - {m}: target ECE={d['ece']:.4f}, coverage={d['target_coverage']:.3f}, "
+            f"realized risk={d['realized_risk']:.4f}"
+        )
+    return lines
 
 
 def _ensemble_report(models, test_df, cfg) -> list[str]:
@@ -236,6 +253,12 @@ def _evaluate(cfg: Config, weights: str, full, ds, loaded_name: str, work: Path,
     test_imgs = test_df["png_path"].drop_duplicates().tolist()
     preds = predict_boxes(best_model, test_imgs, imgsz=cfg.png_size)
     gts = [_scaled_gt(test_df, Path(p).stem, cfg.png_size) for p in test_imgs]
+
+    # in-domain image-level triage (source for source->target recalibration): per image
+    # the max box confidence = screening score, and whether it has any GT opacity box.
+    # Same granularity as the VinDr external triage, so calibration transfers apples-to-apples.
+    src_img_score = np.array([p["scores"].max() if p["scores"].size else 0.0 for p in preds])
+    src_img_label = np.array([1.0 if len(g) else 0.0 for g in gts])
 
     log.info("[8/8] score: mAP@50 + calibration + uncertainty + trust package")
     mAP = map50(preds, gts)
@@ -287,8 +310,9 @@ def _evaluate(cfg: Config, weights: str, full, ds, loaded_name: str, work: Path,
         log.info("[trust] robustness sweep")
         _guarded(lines, "robustness", _robustness_report, best_model, test_df, cfg)
     if cfg.external_enabled:
-        log.info("[trust] external VinDr validation")
-        _guarded(lines, "external", _external_report, best_model, ds, cfg, work)
+        log.info("[trust] external VinDr validation + label-free recalibration")
+        _guarded(lines, "external", _external_report, best_model, ds, cfg, work,
+                 src_img_score, src_img_label)
     log.info("[trust] ensemble uncertainty")
     _guarded(lines, "ensemble", _ensemble_report, ensemble_models, test_df, cfg)
 

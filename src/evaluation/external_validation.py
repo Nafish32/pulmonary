@@ -102,7 +102,7 @@ def external_validate(model, vin_eval, dicom_dir, cfg, cache_dir):
     the point: it measures how far RSNA-fit confidence drifts under domain shift.
     Model-bound -> Kaggle only.
 
-    Returns {"auroc", "ece", "n", "scores"}. n = images actually scored.
+    Returns {"auroc", "ece", "n", "scores", "labels"}. n = images actually scored.
     """
     from ..calibration.reliability import ece_score
     from ..models.predict import predict_boxes  # lazy
@@ -110,11 +110,13 @@ def external_validate(model, vin_eval, dicom_dir, cfg, cache_dir):
     id_to_png = _cache_vindr_pngs(vin_eval["image_id"], dicom_dir, cache_dir, cfg.png_size)
     scored = vin_eval[vin_eval["image_id"].isin(id_to_png)]
     if len(scored) == 0:
-        return {"auroc": float("nan"), "ece": float("nan"), "n": 0, "scores": np.zeros((0,))}
+        return {"auroc": float("nan"), "ece": float("nan"), "n": 0,
+                "scores": np.zeros((0,)), "labels": np.zeros((0,))}
 
     paths = [id_to_png[i] for i in scored["image_id"]]
     preds = predict_boxes(model, paths, imgsz=cfg.png_size)
     scores = np.array([p["scores"].max() if p["scores"].size else 0.0 for p in preds])
     labels = scored["label"].to_numpy()
     ece = ece_score(scores, labels.astype(float), cfg.n_bins) if scores.size else float("nan")
-    return {"auroc": _auroc(scores, labels), "ece": float(ece), "n": int(len(labels)), "scores": scores}
+    return {"auroc": _auroc(scores, labels), "ece": float(ece), "n": int(len(labels)),
+            "scores": scores, "labels": labels.astype(float)}
