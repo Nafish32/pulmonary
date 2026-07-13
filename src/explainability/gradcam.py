@@ -17,15 +17,22 @@ def run_cam(cam_cls, model, image, target_layer):
     only. Caller supplies the target layer explicitly (backbone/version dependent).
     """
     import torch
+    from pytorch_grad_cam.utils.model_targets import ClassifierOutputTarget
 
     arr = np.asarray(image, np.float32) / 255.0
     if arr.ndim == 2:
         arr = np.repeat(arr[None], 3, axis=0)  # 1->3 channel for the CNN
     tensor = torch.from_numpy(arr[None]).float()
 
-    net = getattr(model, "model", model)  # unwrap Ultralytics -> nn.Module
+    net = getattr(model, "model", model).float().eval()  # unwrap Ultralytics -> nn.Module
+
+    # Ultralytics forward returns a (preds, feats) TUPLE, not a class-logit tensor.
+    # grad-cam's default target path does argmax(outputs.cpu()) on it ->
+    # 'tuple' object has no attribute 'cpu'. Passing an explicit target skips that
+    # path. EigenCAM is gradient-free (SVD of target-layer activations) and ignores
+    # the target's value, so a dummy target works and no backward is run.
     with cam_cls(model=net, target_layers=[target_layer]) as cam:
-        return cam(input_tensor=tensor)[0]  # (H, W), already 0..1
+        return cam(input_tensor=tensor, targets=[ClassifierOutputTarget(0)])[0]  # (H, W) 0..1
 
 
 def gradcam(model, image, target_layer):

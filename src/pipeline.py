@@ -101,7 +101,6 @@ def _xai_report(model, test_df, cfg) -> list[str]:
     """
     from .explainability.eigencam import eigencam
     from .explainability.evaluation import saliency_energy_in_box
-    from .explainability.gradcam import gradcam
 
     pos = _positive_test_rows(test_df, cfg.xai_samples)
     if len(pos) == 0:
@@ -114,7 +113,10 @@ def _xai_report(model, test_df, cfg) -> list[str]:
     except Exception as e:  # noqa: BLE001
         return [f"- XAI: could not resolve target layer ({e}), skipped"]
 
-    methods = {"gradcam++": gradcam, "eigencam": eigencam}
+    # gradcam++ needs a scalar class logit to backprop; a YOLO detection head has
+    # none (its forward is a tuple of box/anchor tensors), so it's dropped. EigenCAM
+    # is gradient-free -- the right, robust tool for a detector backbone.
+    methods = {"eigencam": eigencam}
     energies = {name: [] for name in methods}
     for r in pos.itertuples():
         img, box = _load_img_gt(test_df, r.png_path, cfg)
@@ -158,11 +160,16 @@ def _robustness_report(model, test_df, cfg) -> list[str]:
     worst_key, (worst_map, worst_ece) = min(
         ((k, v) for k, v in res.items() if k != "clean"), key=lambda kv: kv[1][0]
     )
+    import math
+
+    # worst case can wipe out all conf>=0.05 preds -> ECE undefined (nan). Report it
+    # as such instead of "nan (drift +nan)" -- the mAP collapse is the real finding.
+    ece_str = ("n/a (no conf>=0.05 preds under corruption)" if math.isnan(worst_ece)
+               else f"{worst_ece:.4f} (drift {worst_ece - clean_ece:+.4f})")
     return [
         f"- robustness ({len(imgs)} imgs): clean mAP@50={clean_map:.4f} ECE={clean_ece:.4f}",
         f"  - worst case {worst_key}: mAP@50={worst_map:.4f} "
-        f"(drop {clean_map - worst_map:.4f}), ECE={worst_ece:.4f} "
-        f"(drift {worst_ece - clean_ece:+.4f})",
+        f"(drop {clean_map - worst_map:.4f}), ECE={ece_str}",
     ]
 
 
