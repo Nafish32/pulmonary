@@ -74,41 +74,49 @@ def recalibrate(method: str, source_conf, source_correct, target_conf):
     raise ValueError(f"unknown recalibration method {method!r}")
 
 
-def referral_transfer(source_conf, source_correct, target_conf, target_correct,
-                      method: str, target_risk: float = 0.1):
-    """Accept target predictions whose RECALIBRATED confidence >= 1 - target_risk.
+def referral_gap(source_conf, source_correct, target_conf, target_correct,
+                 method: str, coverage: float = 0.2):
+    """At the top-``coverage`` most-confident target predictions, compare the
+    confidence-IMPLIED risk to the ACTUAL risk.
 
-    The clinical statement: a calibrated triage system sets its abstention threshold
-    straight from the risk budget (accept p >= 1-alpha, expect <=alpha error) with no
-    target labels. If confidence transferred honestly, realized risk lands near
-    ``target_risk``; under drift, raw confidence overshoots (accepts over-confident
-    off-domain errors). target_correct is used for EVALUATION only.
+    Recalibration is monotone, so it can't change WHICH predictions are the most
+    confident -- the accepted set and its ``actual_risk`` are identical across methods.
+    What changes is ``expected_risk`` = 1 - mean(recalibrated confidence of the accepted
+    set): raw over-confidence claims a tiny risk the data doesn't support, while a good
+    recalibration makes the claim match reality. ``calib_gap`` = |expected - actual| is
+    the trustworthiness of the operating point -- the number that must shrink for a
+    referral threshold to mean anything off-domain. target_correct = EVALUATION only.
 
-    Returns {"threshold", "target_coverage", "realized_risk"}.
+    Returns {"coverage", "expected_risk", "actual_risk", "calib_gap"}.
     """
-    tgt = np.asarray(recalibrate(method, source_conf, source_correct, target_conf), float)
-    thr = 1.0 - target_risk
+    s = np.asarray(recalibrate(method, source_conf, source_correct, target_conf), float)
     tcorr = np.asarray(target_correct, float)
-    accept = tgt >= thr
-    realized = float(1.0 - tcorr[accept].mean()) if accept.any() else float("nan")
-    return {"threshold": float(thr), "target_coverage": float(accept.mean()),
-            "realized_risk": realized}
+    if s.size == 0:
+        return {"coverage": 0.0, "expected_risk": float("nan"),
+                "actual_risk": float("nan"), "calib_gap": float("nan")}
+    k = max(1, int(round(coverage * s.size)))
+    idx = np.argsort(-s)[:k]  # most-confident k by recalibrated score
+    expected = float(1.0 - s[idx].mean())
+    actual = float(1.0 - tcorr[idx].mean())
+    return {"coverage": k / s.size, "expected_risk": expected,
+            "actual_risk": actual, "calib_gap": abs(expected - actual)}
 
 
 def evaluate_recalibration(source_conf, source_correct, target_conf, target_correct,
-                           n_bins: int = 15, target_risk: float = 0.1):
-    """Compare every method: target ECE + referral-threshold transfer.
+                           n_bins: int = 15, coverage: float = 0.2):
+    """Compare every method: target ECE + operating-point calibration gap.
 
-    Returns {method: {"ece", "threshold", "target_coverage", "realized_risk"}}.
-    Lower target ECE = better calibration; realized_risk closest to target_risk =
-    safest threshold transfer.
+    Returns {method: {"ece", "coverage", "expected_risk", "actual_risk", "calib_gap"}}.
+    Lower target ECE = better calibration overall; lower calib_gap = the referral
+    operating point's confidence is trustworthy off-domain. ``actual_risk`` is the same
+    across methods by construction (recalibration is rank-preserving).
     """
     tgt_correct = np.asarray(target_correct, float)
     out = {}
     for m in METHODS:
         s = recalibrate(m, source_conf, source_correct, target_conf)
         ece = ece_score(s, tgt_correct, n_bins) if s.size else float("nan")
-        ref = referral_transfer(source_conf, source_correct, target_conf, target_correct,
-                                m, target_risk)
-        out[m] = {"ece": float(ece), **ref}
+        gap = referral_gap(source_conf, source_correct, target_conf, target_correct,
+                           m, coverage)
+        out[m] = {"ece": float(ece), **gap}
     return out

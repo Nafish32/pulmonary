@@ -196,12 +196,15 @@ def _external_report(model, ds, cfg, work, src_score, src_label) -> list[str]:
 
     # label-free recalibration RSNA(source) -> VinDr(target): does confidence transfer?
     rec = evaluate_recalibration(src_score, src_label, res["scores"], res["labels"],
-                                 cfg.n_bins, target_risk=0.10)
-    lines.append("- external recalibration (label-free; referral risk budget=0.10):")
+                                 cfg.n_bins, coverage=0.20)
+    a = next(iter(rec.values()))["actual_risk"]  # same across methods (rank-preserving)
+    lines.append(
+        f"- external recalibration (label-free; top-20% referral, actual risk={a:.4f}):"
+    )
     for m, d in rec.items():
         lines.append(
-            f"  - {m}: target ECE={d['ece']:.4f}, coverage={d['target_coverage']:.3f}, "
-            f"realized risk={d['realized_risk']:.4f}"
+            f"  - {m}: target ECE={d['ece']:.4f}, expected risk={d['expected_risk']:.4f}, "
+            f"calib gap={d['calib_gap']:.4f}"
         )
     return lines
 

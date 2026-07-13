@@ -45,14 +45,16 @@ def test_dm_temperature_softens_overconfidence():
     assert T > 1.0, f"overconfident target needs softening T>1, got {T:.3f}"
 
 
-def test_referral_threshold_transfers_safer_after_dm():
+def test_dm_shrinks_operating_point_calibration_gap():
     src_conf, src_correct, tgt_conf, tgt_correct = _shifted_domains()
     res = evaluate_recalibration(src_conf, src_correct, tgt_conf, tgt_correct,
-                                 n_bins=15, target_risk=0.1)
-    # Raw confidence OVERSHOOTS the risk budget off-domain (dangerous: more errors than
-    # the promised 10%). dm keeps realized risk WITHIN budget (safe, if conservative).
-    assert res["none"]["realized_risk"] > 0.1
-    assert res["dm"]["realized_risk"] <= 0.1 + 1e-9
+                                 n_bins=15, coverage=0.2)
+    # Same accepted set across methods (recalibration is rank-preserving), so actual
+    # risk is identical -- the confidence CLAIM is what differs.
+    assert res["none"]["actual_risk"] == res["dm"]["actual_risk"]
+    # Raw over-confidence claims a far-too-low risk at the operating point; dm's claim
+    # matches reality, so its calibration gap is much smaller.
+    assert res["dm"]["calib_gap"] < 0.5 * res["none"]["calib_gap"]
 
 
 def test_recalibration_is_rank_preserving():
