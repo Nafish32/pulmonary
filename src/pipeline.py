@@ -80,14 +80,17 @@ def _positive_test_rows(test_df, n: int):
 
 
 def _load_img_gt(test_df, png_path, cfg):
-    """(uint8 png_size-square array, first GT box xyxy in png_size frame) or (None, None)."""
+    """(uint8 png_size-square array, ALL GT boxes (N,4) xyxy in png_size frame) or (None, None).
+
+    Returns every box, not just the first -- RSNA is often bilateral, and XAI
+    energy-in-box must credit saliency landing in ANY lesion (see box_union_mask)."""
     import cv2
 
     img = cv2.imread(png_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         return None, None
     g = _scaled_gt(test_df, Path(png_path).stem, cfg.png_size)
-    return img, (g[0] if len(g) else None)
+    return img, (g if len(g) else None)
 
 
 def _xai_report(model, test_df, cfg) -> list[str]:
@@ -100,7 +103,7 @@ def _xai_report(model, test_df, cfg) -> list[str]:
     skip, never crash the run.
     """
     from .explainability.eigencam import eigencam
-    from .explainability.evaluation import saliency_energy_in_box
+    from .explainability.evaluation import box_union_mask, saliency_energy_in_box
 
     pos = _positive_test_rows(test_df, cfg.xai_samples)
     if len(pos) == 0:
@@ -118,22 +121,21 @@ def _xai_report(model, test_df, cfg) -> list[str]:
     # is gradient-free -- the right, robust tool for a detector backbone.
     methods = {"eigencam": eigencam}
     energies = {name: [] for name in methods}
-    baselines = []   # box_area/img_area per image = the uniform-saliency null. energy
+    baselines = []   # union(box)_area/img_area per image = uniform-saliency null. energy
     first = None     # AT/below this = saliency no better than chance (wrong layer or diffuse).
     for r in pos.itertuples():
-        img, box = _load_img_gt(test_df, r.png_path, cfg)
-        if img is None or box is None:
+        img, boxes = _load_img_gt(test_df, r.png_path, cfg)
+        if img is None or boxes is None:
             continue
-        x1, y1, x2, y2 = box
-        baselines.append(max(0.0, (x2 - x1) * (y2 - y1)) / float(img.shape[0] * img.shape[1]))
+        baselines.append(float(box_union_mask(img.shape, boxes).mean()))
         for name, fn in methods.items():
             try:
                 sal = fn(model, img, target)
-                e = saliency_energy_in_box(sal, box)
+                e = saliency_energy_in_box(sal, boxes)
                 if e == e:  # not NaN
                     energies[name].append(e)
                     if first is None:
-                        first = (img, box, sal)
+                        first = (img, boxes, sal)
             except Exception as ex:  # noqa: BLE001 -- one method/image failing != run failing
                 log.warning("XAI %s failed on %s: %s", name, r.patientId, ex)
 
@@ -153,9 +155,9 @@ def _xai_report(model, test_df, cfg) -> list[str]:
     return lines if any_ok else ["- XAI: all methods failed (see logs), skipped"]
 
 
-def _save_xai_overlay(img, box, sal, out_png) -> None:
-    """Dump one saliency heatmap over the image with the GT box, for eyeballing whether
-    the map lands on the lesion. Guarded by caller's _guarded; cv2 only, no matplotlib."""
+def _save_xai_overlay(img, boxes, sal, out_png) -> None:
+    """Dump one saliency heatmap over the image with ALL GT boxes, for eyeballing
+    whether the map lands on the lesion(s). cv2 only, no matplotlib."""
     import cv2
 
     s = np.clip(np.asarray(sal, float), 0, None)
@@ -164,8 +166,8 @@ def _save_xai_overlay(img, box, sal, out_png) -> None:
         s = cv2.resize(s, (img.shape[1], img.shape[0]))
     heat = cv2.applyColorMap((255 * s).astype(np.uint8), cv2.COLORMAP_JET)
     over = cv2.addWeighted(cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), 0.55, heat, 0.45, 0)
-    x1, y1, x2, y2 = (int(round(v)) for v in box)
-    cv2.rectangle(over, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    for x1, y1, x2, y2 in np.atleast_2d(np.asarray(boxes, float)):
+        cv2.rectangle(over, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
     out_png.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(out_png), over)
 

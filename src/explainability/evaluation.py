@@ -9,20 +9,30 @@ from __future__ import annotations
 import numpy as np
 
 
-def saliency_energy_in_box(saliency, box_xyxy) -> float:
-    """Fraction of total (non-negative) saliency energy inside the GT box.
+def box_union_mask(shape, boxes_xyxy):
+    """Boolean HxW mask, True inside the UNION of GT boxes (xyxy pixels).
 
-    ~1.0 = saliency concentrates on the lesion; near box_area/image_area = no
-    better than uniform. NaN if the map is all-zero.
+    Accepts a single box (4,) or many (N,4) -- RSNA images are often bilateral
+    (2 opacities), so saliency must be credited for landing in ANY GT box, not
+    just the first. atleast_2d makes the single-box case fall through unchanged.
+    """
+    m = np.zeros(shape, bool)
+    for x1, y1, x2, y2 in np.atleast_2d(np.asarray(boxes_xyxy, float)):
+        m[max(int(round(y1)), 0):int(round(y2)), max(int(round(x1)), 0):int(round(x2))] = True
+    return m
+
+
+def saliency_energy_in_box(saliency, boxes_xyxy) -> float:
+    """Fraction of total (non-negative) saliency energy inside the GT box(es).
+
+    ~1.0 = saliency concentrates on the lesion(s); near union_area/image_area = no
+    better than uniform. Unions all boxes (bilateral cases). NaN if map is all-zero.
     """
     s = np.clip(np.asarray(saliency, float), 0, None)
     total = s.sum()
     if total <= 0:
         return float("nan")
-    x1, y1, x2, y2 = (int(round(v)) for v in box_xyxy)
-    x1, y1 = max(x1, 0), max(y1, 0)
-    inside = s[y1:y2, x1:x2].sum()
-    return float(inside / total)
+    return float(s[box_union_mask(s.shape, boxes_xyxy)].sum() / total)
 
 
 def deletion_curve(model, image, saliency, steps: int = 20):
