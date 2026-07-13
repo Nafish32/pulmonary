@@ -13,7 +13,7 @@ import numpy as np
 def run_cam(cam_cls, model, image, target_layer):
     """Run any pytorch-grad-cam class -> (H, W) saliency in [0, 1].
 
-    Shared by gradcam/eigencam/scorecam. Model-bound (torch + grad-cam) -> Kaggle
+    Used by eigencam (the active method). Model-bound (torch + grad-cam) -> Kaggle
     only. Caller supplies the target layer explicitly (backbone/version dependent).
     """
     import torch

@@ -5,7 +5,7 @@ imgsz: 640
 fallback_imgsz: 512
 batch: 12
 png_size: 640
-device: "0,1"   # use both T4/P100 GPUs (DDP, ~2x faster). Set to "0" if DDP errors in the Kaggle notebook.
+device: "0"     # single-GPU. Kaggle DDP ("0,1") is flaky and breaks checkpoint-resume -> keep "0".
 detector_model_name: yolo26m.pt
 calibration_enabled: true
 uncertainty_enabled: true

@@ -93,11 +93,11 @@ def _load_img_gt(test_df, png_path, cfg):
 def _xai_report(model, test_df, cfg) -> list[str]:
     """XAI validation: mean saliency energy-in-GT-box over positive test images.
 
-    Grad-CAM++ + EigenCAM (ScoreCAM is slow; skipped in the loop). Energy near 1
-    = saliency concentrates on the lesion; near box_area/image_area = no better
-    than uniform. Target layer for a YOLO backbone is NOT VERIFIED across
-    ultralytics versions -> guarded: on any failure, log + report skip, never
-    crash the run.
+    EigenCAM (gradient-free -- the right tool for a detection head; gradcam++ needs a
+    scalar class logit a YOLO/RT-DETR head lacks). Energy near 1 = saliency concentrates
+    on the lesion; near box_area/image_area = no better than uniform. Target layer is
+    NOT VERIFIED across ultralytics versions -> guarded: on any failure, log + report
+    skip, never crash the run.
     """
     from .explainability.eigencam import eigencam
     from .explainability.evaluation import saliency_energy_in_box

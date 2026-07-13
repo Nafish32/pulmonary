@@ -59,7 +59,6 @@ class Config(BaseModel):
     detector_fallback_chain: list[str] = Field(
         default_factory=lambda: ["yolo26m.pt", "yolo11m.pt", "yolov8m.pt"]
     )
-    optional_compare_model_name: str | None = None
     num_workers: int = 8
     cache_png: bool = True
     max_patients: int | None = None  # subset to N random patients (quick-but-real probe); None = all
@@ -68,10 +67,7 @@ class Config(BaseModel):
     calibration_enabled: bool = True
     uncertainty_enabled: bool = True
     xai_enabled: bool = True
-    xai_samples: int = 20  # positive test images for saliency energy-in-box
-    xai_methods: list[str] = Field(
-        default_factory=lambda: ["eigencam", "gradcam", "scorecam"]
-    )
+    xai_samples: int = 20  # positive test images for saliency energy-in-box (EigenCAM)
     robustness_enabled: bool = True
     robustness_samples: int = 200  # test-image subset for the sweep (full set = 15x inference)
     external_enabled: bool = True  # VinDr cross-domain eval; skips cleanly if VinDr absent
