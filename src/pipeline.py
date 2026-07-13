@@ -118,25 +118,56 @@ def _xai_report(model, test_df, cfg) -> list[str]:
     # is gradient-free -- the right, robust tool for a detector backbone.
     methods = {"eigencam": eigencam}
     energies = {name: [] for name in methods}
+    baselines = []   # box_area/img_area per image = the uniform-saliency null. energy
+    first = None     # AT/below this = saliency no better than chance (wrong layer or diffuse).
     for r in pos.itertuples():
         img, box = _load_img_gt(test_df, r.png_path, cfg)
         if img is None or box is None:
             continue
+        x1, y1, x2, y2 = box
+        baselines.append(max(0.0, (x2 - x1) * (y2 - y1)) / float(img.shape[0] * img.shape[1]))
         for name, fn in methods.items():
             try:
-                e = saliency_energy_in_box(fn(model, img, target), box)
+                sal = fn(model, img, target)
+                e = saliency_energy_in_box(sal, box)
                 if e == e:  # not NaN
                     energies[name].append(e)
+                    if first is None:
+                        first = (img, box, sal)
             except Exception as ex:  # noqa: BLE001 -- one method/image failing != run failing
                 log.warning("XAI %s failed on %s: %s", name, r.patientId, ex)
 
-    lines = ["- XAI saliency energy-in-box (positives, higher=better):"]
+    base = float(np.mean(baselines)) if baselines else float("nan")
+    if first is not None:
+        _save_xai_overlay(*first, Path(cfg.working_root) / "outputs" / "xai_example.png")
+
+    lines = [f"- XAI saliency energy-in-box (positives; uniform baseline={base:.3f}, higher=better):"]
     any_ok = False
     for name, es in energies.items():
         if es:
             any_ok = True
-            lines.append(f"  - {name}: {np.mean(es):.3f} (n={len(es)})")
+            m = float(np.mean(es))
+            verdict = ("<= uniform: NOT localizing (suspect target layer, see xai_example.png)"
+                       if m <= base * 1.15 else f"{m / base:.2f}x uniform")
+            lines.append(f"  - {name}: {m:.3f} (n={len(es)}) -- {verdict}")
     return lines if any_ok else ["- XAI: all methods failed (see logs), skipped"]
+
+
+def _save_xai_overlay(img, box, sal, out_png) -> None:
+    """Dump one saliency heatmap over the image with the GT box, for eyeballing whether
+    the map lands on the lesion. Guarded by caller's _guarded; cv2 only, no matplotlib."""
+    import cv2
+
+    s = np.clip(np.asarray(sal, float), 0, None)
+    s = s / s.max() if s.max() > 0 else s
+    if s.shape != img.shape:
+        s = cv2.resize(s, (img.shape[1], img.shape[0]))
+    heat = cv2.applyColorMap((255 * s).astype(np.uint8), cv2.COLORMAP_JET)
+    over = cv2.addWeighted(cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), 0.55, heat, 0.45, 0)
+    x1, y1, x2, y2 = (int(round(v)) for v in box)
+    cv2.rectangle(over, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    out_png.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out_png), over)
 
 
 def _robustness_report(model, test_df, cfg) -> list[str]:
