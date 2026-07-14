@@ -74,10 +74,11 @@ def train_detector(model, data_yaml: str, cfg, seed: int | None = None,
         kw["device"] = cfg.device
 
     if last.exists():
-        from ultralytics import YOLO
-
         logger.info("resuming from checkpoint %s (skipping retrain from scratch)", last)
-        model = YOLO(str(last))
+        # reload through the SAME wrapper class it was built with (YOLO vs RTDETR).
+        # Hardcoding YOLO(last) misloads an RT-DETR checkpoint on resume -- and a
+        # 12hr Kaggle train gets killed + resumed routinely, so this path is hot.
+        model = type(model)(str(last))
         kw["resume"] = True
 
     try:
