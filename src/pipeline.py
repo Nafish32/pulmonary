@@ -103,7 +103,8 @@ def _xai_report(model, test_df, cfg) -> list[str]:
     skip, never crash the run.
     """
     from .explainability.eigencam import eigencam
-    from .explainability.evaluation import box_union_mask, saliency_energy_in_box
+    from .explainability.evaluation import (
+        box_union_mask, deletion_curve, saliency_energy_in_box)
 
     pos = _positive_test_rows(test_df, cfg.xai_samples)
     if len(pos) == 0:
@@ -121,8 +122,10 @@ def _xai_report(model, test_df, cfg) -> list[str]:
     # is gradient-free -- the right, robust tool for a detector backbone.
     methods = {"eigencam": eigencam}
     energies = {name: [] for name in methods}
-    baselines = []   # union(box)_area/img_area per image = uniform-saliency null. energy
-    first = None     # AT/below this = saliency no better than chance (wrong layer or diffuse).
+    baselines = []   # union(box)_area/img_area per image = uniform-saliency null.
+    del_aucs = []    # deletion faithfulness: normalized AUC of score vs %most-salient erased.
+    DEL_MAX = 8      # ponytail: deletion = steps x forward-passes/img; cap the subset.
+    first = None
     for r in pos.itertuples():
         img, boxes = _load_img_gt(test_df, r.png_path, cfg)
         if img is None or boxes is None:
@@ -136,6 +139,14 @@ def _xai_report(model, test_df, cfg) -> list[str]:
                     energies[name].append(e)
                     if first is None:
                         first = (img, boxes, sal)
+                    # Faithfulness (GT-independent): erase most-salient pixels, watch the
+                    # detection score fall. Only where the model actually detected (score
+                    # floor) so the curve isn't noise. Lower AUC = salient pixels matter.
+                    if name == "eigencam" and len(del_aucs) < DEL_MAX:
+                        fr, sc = deletion_curve(model, img, sal, steps=11)
+                        if sc[0] >= 0.25:  # trapezoid AUC (np.trapz gone in numpy 2.x)
+                            auc = np.sum((sc[:-1] + sc[1:]) / 2 * np.diff(fr))
+                            del_aucs.append(float(auc / sc[0]))
             except Exception as ex:  # noqa: BLE001 -- one method/image failing != run failing
                 log.warning("XAI %s failed on %s: %s", name, r.patientId, ex)
 
@@ -149,9 +160,12 @@ def _xai_report(model, test_df, cfg) -> list[str]:
         if es:
             any_ok = True
             m = float(np.mean(es))
-            verdict = ("<= uniform: NOT localizing (suspect target layer, see xai_example.png)"
-                       if m <= base * 1.15 else f"{m / base:.2f}x uniform")
+            verdict = ("~uniform: attends to lung fields, not lesion-specific (see xai_example.png)"
+                       if m <= base * 1.15 else f"{m / base:.2f}x uniform (localizing)")
             lines.append(f"  - {name}: {m:.3f} (n={len(es)}) -- {verdict}")
+    if del_aucs:
+        lines.append(f"  - eigencam deletion AUC={np.mean(del_aucs):.3f} (n={len(del_aucs)}, "
+                     "lower=more faithful: erasing salient pixels collapses the detection)")
     return lines if any_ok else ["- XAI: all methods failed (see logs), skipped"]
 
 
