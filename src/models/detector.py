@@ -41,3 +41,22 @@ def load_detector(fallback_chain: list[str]):
             logger.warning("detector %s unavailable: %s", name, e)
             errors.append(f"{name}: {e}")
     raise RuntimeError("no detector in fallback chain loaded:\n" + "\n".join(errors))
+
+
+def load_weights(family_hint: str, weights_path: str):
+    """Load a *trained* checkpoint through the SAME class it was trained with.
+
+    ``family_hint`` is any string that names the detector family (e.g. the
+    ``loaded_name``/``detector_model_name`` from training, like ``"rtdetr-l.pt"``
+    or ``"yolo26m.pt (reload)"``) -- only the ``rtdetr`` prefix is checked, same
+    rule as ``_construct``. Needed because eval code used to hardcode
+    ``YOLO(weights)``, which silently misloads an RT-DETR checkpoint (RTDETR and
+    YOLO are different Ultralytics wrapper classes over different architectures).
+    """
+    if str(family_hint).lower().startswith("rtdetr"):
+        from ultralytics import RTDETR
+
+        return RTDETR(weights_path)
+    from ultralytics import YOLO
+
+    return YOLO(weights_path)

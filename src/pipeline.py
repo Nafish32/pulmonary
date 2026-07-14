@@ -293,12 +293,15 @@ def _evaluate(cfg: Config, weights: str, full, ds, loaded_name: str, work: Path,
     from .calibration.temperature_scaling import fit_temperature
     from .evaluation.metrics import label_tp_fp, map50
     from .evaluation.plots import reliability_diagram
+    from .models.detector import load_weights
     from .models.predict import predict_boxes
     from .uncertainty.referral import aurc
-    from ultralytics import YOLO
 
     log.info("[7/8] predict on held-out test (from %s)", weights)
-    best_model = YOLO(weights)
+    # loaded_name carries the detector family (e.g. "rtdetr-l.pt" vs "yolo26m.pt")
+    # -- must dispatch through the SAME class as training, or an RT-DETR
+    # checkpoint loaded as YOLO(weights) misloads. See models/detector.load_weights.
+    best_model = load_weights(loaded_name, weights)
     test_df = full[full["split"] == "test"]
     test_imgs = test_df["png_path"].drop_duplicates().tolist()
     preds = predict_boxes(best_model, test_imgs, imgsz=cfg.png_size)
@@ -397,7 +400,11 @@ def eval_from_weights(cfg: Config, weights: str) -> str:
     work = ensure_dir(Path(cfg.working_root) / "outputs")
     log.info("=== eval_from_weights START (weights=%s) ===", weights)
     full, ds = _build_full_df(cfg, work)
-    return _evaluate(cfg, weights, full, ds, f"{Path(weights).name} (reload)", work)
+    # label must keep the family prefix (cfg.detector_model_name, e.g. "rtdetr-l.pt")
+    # so _evaluate's load_weights(loaded_name, ...) dispatch still sees "rtdetr*" --
+    # Path(weights).name alone (usually "best.pt") loses that and would misload.
+    label = f"{cfg.detector_model_name} (reload {Path(weights).name})"
+    return _evaluate(cfg, weights, full, ds, label, work)
 
 
 def run_all(cfg: Config) -> str:
