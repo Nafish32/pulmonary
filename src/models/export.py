@@ -11,6 +11,8 @@ import os
 import shutil
 from pathlib import Path
 
+import numpy as np
+
 from src.utils.logger import get_logger
 from src.utils.paths import ensure_dir
 
@@ -43,6 +45,70 @@ def _link_or_copy(src: Path, dst: Path) -> None:
         os.symlink(src, dst)
     except (OSError, NotImplementedError):
         shutil.copy(src, dst)
+
+
+def _augment_train_with_corruptions(root: Path, cfg) -> None:
+    """Duplicate a bounded fraction of TRAIN images as corrupted copies (+ same
+    label file) so training sees some of what robustness._robustness_report
+    tests at eval time -- current baseline has ZERO corruption exposure during
+    training, which is exactly why clean mAP@50=0.4563 collapses to 0.0057
+    under gaussian_noise severity 3 (see CLAUDE.md robustness_status).
+
+    Deliberately offline (extra files on disk), not a hook into Ultralytics'
+    internal augmentation pipeline: trainer-batch tensor shape/dtype/timing is
+    version-specific and unverifiable without a live torch/ultralytics install
+    in this environment, so hooking it blind would be exactly the kind of
+    invented-API risk this repo's rules forbid. Reuses the same, already-tested
+    ``corrupt()`` the robustness sweep uses -- same corruption vocabulary
+    end to end. Severity 3 is excluded (train on 1-2 only; the most extreme
+    severity is kept eval-only to avoid dragging down clean accuracy).
+
+    Guarded per-image: any single failure is logged and skipped, never aborts
+    export. Off by default behavior comes from cfg -- getattr with a safe
+    default so callers passing a minimal cfg stand-in (as several existing
+    tests do) are unaffected.
+    """
+    kinds = getattr(cfg, "train_corruption_kinds", [])
+    severities = getattr(cfg, "train_corruption_severities", [])
+    frac = getattr(cfg, "train_corruption_frac", 0.0)
+    if not (getattr(cfg, "train_corruption_aug_enabled", False) and kinds and severities and frac > 0):
+        return
+
+    import cv2  # lazy: only needed when this augmentation actually runs
+
+    from src.robustness.corruption import corrupt
+
+    train_dir = root / "images" / "train"
+    train_imgs = sorted(p for p in train_dir.glob("*.png"))
+    n = int(len(train_imgs) * frac)
+    if n <= 0:
+        return
+
+    rng = np.random.default_rng(getattr(cfg, "seed", 42))
+    chosen = rng.choice(np.array(train_imgs, dtype=object), size=n, replace=False)
+    made = 0
+    for png in chosen:
+        try:
+            img = cv2.imread(str(png), cv2.IMREAD_GRAYSCALE)
+            if img is None:
+                continue
+            kind = str(rng.choice(kinds))
+            severity = int(rng.choice(severities))
+            corrupted = corrupt(img, kind, severity)
+
+            stem = png.stem
+            suffix = f"_corr_{kind}{severity}"
+            out_png = png.parent / f"{stem}{suffix}.png"
+            cv2.imwrite(str(out_png), corrupted)
+
+            src_label = root / "labels" / "train" / f"{stem}.txt"
+            dst_label = root / "labels" / "train" / f"{stem}{suffix}.txt"
+            dst_label.write_text(src_label.read_text() if src_label.exists() else "")
+            made += 1
+        except Exception as e:  # noqa: BLE001 -- one bad image must not break export
+            logger.warning("train corruption-aug skipped for %s: %s", png, e)
+    logger.info("train corruption-aug: added %d/%d corrupted train images (kinds=%s, sev=%s)",
+                made, n, kinds, severities)
 
 
 def export_split(df, out_dir, cfg, class_name: str = "opacity") -> str:
@@ -81,6 +147,8 @@ def export_split(df, out_dir, cfg, class_name: str = "opacity") -> str:
 
         label_path = root / "labels" / split / f"{png.stem}.txt"
         label_path.write_text("\n".join(lines))
+
+    _augment_train_with_corruptions(root, cfg)
 
     data_yaml = root / "data.yaml"
     data_yaml.write_text(

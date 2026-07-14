@@ -105,15 +105,17 @@ def _xai_report(model, test_df, cfg) -> list[str]:
     from .explainability.eigencam import eigencam
     from .explainability.evaluation import (
         box_union_mask, deletion_curve, saliency_energy_in_box)
+    from .explainability.gradcam import resolve_target_layer
 
     pos = _positive_test_rows(test_df, cfg.xai_samples)
     if len(pos) == 0:
         return ["- XAI: no positive test images, skipped"]
 
-    # NOT VERIFIED: layer[-2] (last C3k2 before the Detect head) is the usual CAM
-    # target for this backbone. Eyeball one map before trusting the number.
+    # Target layer is found by introspection (last Conv2d-bearing block before
+    # the head), not a hardcoded index -- see resolve_target_layer's docstring.
+    # Still not proven correct for every backbone: eyeball xai_example.png.
     try:
-        target = model.model.model[-2]
+        target = resolve_target_layer(model)
     except Exception as e:  # noqa: BLE001
         return [f"- XAI: could not resolve target layer ({e}), skipped"]
 

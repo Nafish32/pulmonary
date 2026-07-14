@@ -1,13 +1,49 @@
 """Grad-CAM++ over detector feature maps.
 
-NOT VERIFIED: the exact target layer for a YOLO backbone and how pytorch-grad-cam
-hooks Ultralytics' nn.Module wrapper vary by version. Pass an explicit target
-layer (e.g. model.model.model[-2]) and smoke-test the map before trusting numbers.
+NOT VERIFIED: how pytorch-grad-cam hooks Ultralytics' nn.Module wrapper varies
+by version -- smoke-test the map (see pipeline._xai_report's xai_example.png)
+before trusting numbers.
 """
 
 from __future__ import annotations
 
 import numpy as np
+
+
+def resolve_target_layer(model):
+    """Find the CAM target layer by introspection instead of a hardcoded index.
+
+    Previous code guessed ``model.model.model[-2]`` (the second-to-last top-level
+    block) -- fragile across Ultralytics versions/backbones, and unverified. This
+    walks ``model.model.model`` (the nn.Sequential of parsed blocks, true for both
+    YOLO's DetectionModel and RT-DETR's RTDETRDetectionModel under Ultralytics'
+    shared BaseModel) from the end, skips the final block (the detection/decode
+    head -- rarely has a useful spatial conv activation for CAM), and returns the
+    last block that actually contains a Conv2d. That's the standard "last
+    convolutional block before the head" CAM target, derived from the real
+    model structure rather than assumed.
+
+    Still not proven correct for every backbone -- eyeball xai_example.png
+    (pipeline._save_xai_overlay) on a real Kaggle run before trusting the
+    energy-in-box number. Raises RuntimeError (caller must guard) if no
+    Conv2d-bearing block is found at all.
+    """
+    import torch.nn as nn
+
+    net = getattr(model, "model", model)  # unwrap Ultralytics YOLO/RTDETR wrapper
+    seq = getattr(net, "model", None)  # the nn.Sequential of parsed blocks
+    try:
+        blocks = list(seq) if seq is not None else []
+    except TypeError:
+        blocks = []
+    if not blocks:
+        raise RuntimeError("could not find model.model.model (nn.Sequential of blocks)")
+
+    search_order = list(reversed(blocks[:-1])) if len(blocks) > 1 else blocks
+    for block in search_order:
+        if any(isinstance(m, nn.Conv2d) for m in block.modules()):
+            return block
+    raise RuntimeError("no Conv2d-bearing block found in model.model.model")
 
 
 def run_cam(cam_cls, model, image, target_layer):
