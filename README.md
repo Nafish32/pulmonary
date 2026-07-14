@@ -62,7 +62,7 @@ external VinDr caps to 1000 images.
 ## Not verified
 
 Exact `ultralytics` version shipping `yolo26m.pt`. Pin the version you smoke-test
-(`pip show ultralytics`); the fallback chain (yolo26m → yolo11m → yolov8m) covers
+(`pip show ultralytics`); the fallback chain (yolo26m → yolo11m) covers
 older pins.
 
 Grad-CAM++ target layer for a YOLO backbone and how `pytorch-grad-cam` hooks the

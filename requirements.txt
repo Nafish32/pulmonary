@@ -16,7 +16,7 @@ scikit-image
 # Detector + XAI
 # NOT VERIFIED: exact ultralytics version that ships yolo26m.pt weights.
 # Pin the version you smoke-tested before a thesis run; check `pip show ultralytics`
-# and the changelog. Fallback chain (yolo26m->yolo11m->yolov8m) covers older pins.
+# and the changelog. Fallback chain (yolo26m->yolo11m) covers older pins.
 ultralytics
 grad-cam
 

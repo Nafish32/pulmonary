@@ -57,7 +57,7 @@ class Config(BaseModel):
     device: str = ""
     detector_model_name: str = "yolo26m.pt"
     detector_fallback_chain: list[str] = Field(
-        default_factory=lambda: ["yolo26m.pt", "yolo11m.pt", "yolov8m.pt"]
+        default_factory=lambda: ["yolo26m.pt", "yolo11m.pt"]
     )
     num_workers: int = 8
     cache_png: bool = True
