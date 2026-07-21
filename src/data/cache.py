@@ -49,7 +49,10 @@ def build_png_cache(df, images_dir, out_dir, cfg, id_col: str = "patientId"):
     images_dir, out_dir = Path(images_dir), ensure_dir(out_dir)
     ids = df[id_col].unique().tolist()
     # single-channel uint8 at png_size square; single variant (raw only).
-    assert_cache_fits(len(ids), cfg.png_size * cfg.png_size, 1, cfg.working_root)
+    # Only project PNGs not already cached -- a warm cache (2nd detector reusing the
+    # same png dir) has already spent that disk, so counting it double-trips the guard.
+    missing = [p for p in ids if not (cfg.cache_png and (out_dir / f"{p}.png").exists())]
+    assert_cache_fits(len(missing), cfg.png_size * cfg.png_size, 1, cfg.working_root)
 
     def _one(pid):
         dst = out_dir / f"{pid}.png"
