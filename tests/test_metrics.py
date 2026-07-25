@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.evaluation.metrics import iou_xyxy, label_tp_fp, map50
+from src.evaluation.metrics import iou_xyxy, label_tp_fp, map50, map_coco
 
 
 def test_iou_identical_and_disjoint():
@@ -38,3 +38,17 @@ def test_map50_perfect_is_one():
 def test_map50_no_gt_is_nan():
     preds = [{"boxes": np.zeros((0, 4)), "scores": np.zeros((0,))}]
     assert np.isnan(map50(preds, [np.zeros((0, 4))]))
+
+
+def test_map_coco_perfect_is_one():
+    # exact-overlap box is a TP at every IoU threshold -> AP=1 at each -> mean=1
+    preds = [{"boxes": np.array([[0, 0, 10, 10]]), "scores": np.array([0.9])}]
+    gts = [np.array([[0, 0, 10, 10]])]
+    assert np.isclose(map_coco(preds, gts), 1.0)
+
+
+def test_map_coco_below_map50_on_loose_box():
+    # box with IoU~0.68 is TP@50 but FP at high thresholds -> COCO mAP < mAP@50
+    preds = [{"boxes": np.array([[0, 0, 8, 10]]), "scores": np.array([0.9])}]
+    gts = [np.array([[0, 0, 10, 10]])]
+    assert map_coco(preds, gts) < map50(preds, gts)

@@ -294,7 +294,7 @@ def _evaluate(cfg: Config, weights: str, full, ds, loaded_name: str, work: Path,
     from .calibration.reliability import brier_score, ece_score
     from .calibration.temperature_scaling import fit_temperature
     from .evaluation.external_validation import _auroc
-    from .evaluation.metrics import label_tp_fp, map50
+    from .evaluation.metrics import label_tp_fp, map50, map_coco
     from .evaluation.plots import reliability_diagram
     from .models.detector import load_weights
     from .models.predict import predict_boxes
@@ -318,6 +318,7 @@ def _evaluate(cfg: Config, weights: str, full, ds, loaded_name: str, work: Path,
 
     log.info("[8/8] score: mAP@50 + calibration + uncertainty + trust package")
     mAP = map50(preds, gts)
+    mAP_coco = map_coco(preds, gts)  # mAP@[.50:.95] -- matches leaderboard "mAP"
     conf, correct = label_tp_fp(preds, gts)
 
     # conf=0.001 floor floods trust metrics with low-conf FPs on background images
@@ -339,6 +340,7 @@ def _evaluate(cfg: Config, weights: str, full, ds, loaded_name: str, work: Path,
         f"- test images: {len(test_imgs)}, predictions: {conf.size} "
         f"(conf>={TRUST_CONF_GATE}: {conf_t.size})",
         f"- **mAP@50**: {mAP:.4f}",
+        f"- mAP@[.50:.95] (COCO, matches leaderboard 'mAP'): {mAP_coco:.4f}",
         # image-level triage on the SAME granularity as the VinDr external stage
         # (max box conf vs any-GT-box label), so in-domain vs external AUROC/ECE
         # is an apples-to-apples domain-shift comparison.
@@ -394,7 +396,7 @@ def _evaluate(cfg: Config, weights: str, full, ds, loaded_name: str, work: Path,
     tag = "PROBE" if cfg.fast_mode else "THESIS"
     summary = (
         f"[{tag}] {loaded_name} | patients~{test_df['patientId'].nunique()} test | "
-        f"mAP@50={_fmt(mAP)} ECE={_fmt(ece)} AURC={_fmt(risk)} "
+        f"mAP@50={_fmt(mAP)} mAP@[.5:.95]={_fmt(mAP_coco)} ECE={_fmt(ece)} AURC={_fmt(risk)} "
         f"(fast_mode={cfg.fast_mode}, epochs={cfg.epochs})"
     )
     lines.insert(1, f"\n`{summary}`\n")

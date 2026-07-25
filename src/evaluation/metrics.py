@@ -89,3 +89,13 @@ def map50(preds, gts, iou_thr=0.5) -> float:
         mpre[i - 1] = max(mpre[i - 1], mpre[i])
     idx = np.where(mrec[1:] != mrec[:-1])[0]
     return float(np.sum((mrec[idx + 1] - mrec[idx]) * mpre[idx + 1]))
+
+
+def map_coco(preds, gts) -> float:
+    """COCO-style mAP@[.50:.95]: mean of map50 over IoU 0.50..0.95 step 0.05.
+
+    The leaderboard's "mAP" is this averaged metric, not mAP@50 -- report both so
+    the detection SOTA comparison is apples-to-apples (mAP@50 always reads higher).
+    """
+    aps = [map50(preds, gts, t) for t in np.arange(0.5, 1.0, 0.05)]
+    return safe_mean(aps)
