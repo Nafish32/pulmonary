@@ -102,6 +102,7 @@ def _xai_report(model, test_df, cfg) -> list[str]:
     NOT VERIFIED across ultralytics versions -> guarded: on any failure, log + report
     skip, never crash the run.
     """
+    from .explainability.drise import d_rise
     from .explainability.eigencam import eigencam
     from .explainability.evaluation import (
         box_union_mask, deletion_curve, saliency_energy_in_box)
@@ -123,11 +124,15 @@ def _xai_report(model, test_df, cfg) -> list[str]:
     # none (its forward is a tuple of box/anchor tensors), so it's dropped. EigenCAM
     # is gradient-free -- the right, robust tool for a detector backbone.
     methods = {"eigencam": eigencam}
+    # D-RISE is black-box (no target layer, no gradients) so it rides alongside the
+    # CAM methods but is driven separately below -- it can't break on a version bump.
     energies = {name: [] for name in methods}
+    energies["drise"] = []
     baselines = []   # union(box)_area/img_area per image = uniform-saliency null.
     del_aucs = []    # deletion faithfulness: normalized AUC of score vs %most-salient erased.
     DEL_MAX = 8      # ponytail: deletion = steps x forward-passes/img; cap the subset.
-    first = None
+    DRISE_MAX = 8    # ponytail: D-RISE = n_masks forward-passes/img; cap the subset.
+    first = drise_first = None
     for r in pos.itertuples():
         img, boxes = _load_img_gt(test_df, r.png_path, cfg)
         if img is None or boxes is None:
@@ -152,9 +157,24 @@ def _xai_report(model, test_df, cfg) -> list[str]:
             except Exception as ex:  # noqa: BLE001 -- one method/image failing != run failing
                 log.warning("XAI %s failed on %s: %s", name, r.patientId, ex)
 
+        # D-RISE on a capped subset (expensive: n_masks forward-passes/image).
+        if len(energies["drise"]) < DRISE_MAX:
+            try:
+                sal = d_rise(model, img, cfg.png_size)
+                e = saliency_energy_in_box(sal, boxes)
+                if e == e:  # not NaN
+                    energies["drise"].append(e)
+                    if drise_first is None:
+                        drise_first = (img, boxes, sal)
+            except Exception as ex:  # noqa: BLE001
+                log.warning("XAI drise failed on %s: %s", r.patientId, ex)
+
     base = float(np.mean(baselines)) if baselines else float("nan")
     if first is not None:
         _save_xai_overlay(*first, Path(cfg.working_root) / "outputs" / "xai_example.png")
+    if drise_first is not None:
+        _save_xai_overlay(*drise_first,
+                          Path(cfg.working_root) / "outputs" / "xai_example_drise.png")
 
     lines = [f"- XAI saliency energy-in-box (positives; uniform baseline={base:.3f}, higher=better):"]
     any_ok = False
@@ -162,7 +182,8 @@ def _xai_report(model, test_df, cfg) -> list[str]:
         if es:
             any_ok = True
             m = float(np.mean(es))
-            verdict = ("~uniform: attends to lung fields, not lesion-specific (see xai_example.png)"
+            png = "xai_example_drise.png" if name == "drise" else "xai_example.png"
+            verdict = (f"~uniform: attends to lung fields, not lesion-specific (see {png})"
                        if m <= base * 1.15 else f"{m / base:.2f}x uniform (localizing)")
             lines.append(f"  - {name}: {m:.3f} (n={len(es)}) -- {verdict}")
     if del_aucs:
