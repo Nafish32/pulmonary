@@ -293,6 +293,7 @@ def _evaluate(cfg: Config, weights: str, full, ds, loaded_name: str, work: Path,
     """
     from .calibration.reliability import brier_score, ece_score
     from .calibration.temperature_scaling import fit_temperature
+    from .evaluation.external_validation import _auroc
     from .evaluation.metrics import label_tp_fp, map50
     from .evaluation.plots import reliability_diagram
     from .models.detector import load_weights
@@ -338,6 +339,12 @@ def _evaluate(cfg: Config, weights: str, full, ds, loaded_name: str, work: Path,
         f"- test images: {len(test_imgs)}, predictions: {conf.size} "
         f"(conf>={TRUST_CONF_GATE}: {conf_t.size})",
         f"- **mAP@50**: {mAP:.4f}",
+        # image-level triage on the SAME granularity as the VinDr external stage
+        # (max box conf vs any-GT-box label), so in-domain vs external AUROC/ECE
+        # is an apples-to-apples domain-shift comparison.
+        f"- in-domain triage (image-level, RSNA test): "
+        f"AUROC={_auroc(src_img_score, src_img_label):.4f}, "
+        f"ECE={ece_score(src_img_score, src_img_label, cfg.n_bins):.4f}",
     ]
 
     ece = risk = None
@@ -355,7 +362,16 @@ def _evaluate(cfg: Config, weights: str, full, ds, loaded_name: str, work: Path,
 
     if cfg.uncertainty_enabled and conf_t.size:
         risk = aurc(conf_t, correct_t)
-        lines.append(f"- AURC (risk-coverage): {risk:.4f}")
+        # Raw AURC scales with the accepted set's base FP rate (RT-DETR's 300
+        # fixed queries/img vs YOLO's sparse output), so cross-detector comparison
+        # needs E-AURC = AURC minus the oracle-ordering AURC (Geifman et al.):
+        # using correctness itself as the confidence gives the best possible curve.
+        e_aurc = risk - aurc(correct_t, correct_t)
+        full_cov_risk = 1.0 - float(correct_t.mean())
+        lines.append(
+            f"- AURC (risk-coverage): {risk:.4f} "
+            f"(full-coverage risk: {full_cov_risk:.4f}, E-AURC: {e_aurc:.4f})"
+        )
 
     # --- trust package (each guarded; a failure = a note, not a lost run) ---
     if cfg.xai_enabled:
